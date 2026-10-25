@@ -1,0 +1,65 @@
+{
+  "base_images": {
+    "python": "python:3.11.16-slim-bookworm@sha256:4b4c524dc3dce996864e030c7bd9c6b0e517597189fee48f48e05b499442444b",
+    "uv": "ghcr.io/astral-sh/uv:0.12.17@sha256:1194b357d63b7bea6c121d8eef5d08d29c26ffbcfc64ec5ebcefd642ea759edb"
+  },
+  "created_at": "2026-10-25T23:16:57Z",
+  "data": {
+    "generated_audio_in_bundle": false,
+    "recordings_in_bundle": false,
+    "secrets_in_bundle": false,
+    "weights_in_bundle": false
+  },
+  "images": {
+    "api": {
+      "built": true,
+      "local_image_id": "sha256:592afbc115e51ed5fe4b5ec5850146ff7b3000dc34faa6ead2b5575f54bf7336",
+      "smoke_tested": true,
+      "tag": "openclaw-chatterbox-api:0.1.0",
+      "target_verified": false
+    },
+    "worker": {
+      "built": false,
+      "local_image_id": null,
+      "note": "Worker image build was attempted in this development session but did not complete (large cu124/NVIDIA downloads); the target GPU worker image must be built and verified on the authorized host.",
+      "tag": "openclaw-chatterbox-worker:0.1.0",
+      "target_verified": false
+    }
+  },
+  "license": {
+    "chatterbox": "MIT",
+    "model": "MIT",
+    "perth": "MIT",
+    "project": "Apache-2.0"
+  },
+  "project": "openclaw-chatterbox",
+  "release": "0.1.0",
+  "runtime": {
+    "index": "https://download.pytorch.org/whl/cu124",
+    "python": "3.11",
+    "target_gpu_capability": "6.1",
+    "target_support_verified": false,
+    "torch": "2.6.0+cu124",
+    "torchaudio": "2.6.0+cu124"
+  },
+  "schema_version": 1,
+  "source": {
+    "chatterbox_commit": "5de7a54aa4e5e2baadb0182dde554908b48b85c2",
+    "model_repo": "ResembleAI/chatterbox-turbo",
+    "model_revision": "749d1c1a46eb10492095d68fbcf55691ccf137cd",
+    "perth_commit": "ff1c8ac55a976971245cdd53c18d6131ca00d993"
+  },
+  "status": "release-candidate",
+  "unverified_gates": [
+    "CUDA allocation/math and complete synthesis on GTX 1070 Ti / Pascal 6.1",
+    "peak VRAM, process memory, cold/warm latency, real-time factor",
+    "two-profile A/B/A listening and speaker-similarity review",
+    "telephony consumer playback and carrier compatibility",
+    "live OpenClaw version/policy integration and channel attachment",
+    "authorized Clawbox install/upgrade/rollback"
+  ],
+  "wheel": {
+    "filename": "clawvoice-0.1.0-py3-none-any.whl",
+    "sha256": "49416efe9bbe4090465707f59feee4fc8e150a1b1a2b7f97bbb903806966638e"
+  }
+}

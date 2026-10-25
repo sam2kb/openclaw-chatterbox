@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Create a voice · clawvoice</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="masthead">
+    <a class="wordmark" href="/"><span class="mark" aria-hidden="true"></span>clawvoice</a>
+    <span class="tagline">local voice studio</span>
+    <span class="local-pill">On this machine</span>
+  </header>
+
+  <main id="main">
+    <section class="intro-wrap">
+      <div class="intro">
+        <p class="kicker">A private recording studio</p>
+        <h1>Create a voice.</h1>
+        <p class="lede">
+          Record a clean sample or upload an audio file. This service uses your clip as
+          a reference for new speech. It does <strong>not</strong> train model weights.
+        </p>
+        <p class="privacy">Your recording stays in this service's private storage. Nothing is published.</p>
+      </div>
+      <aside class="studio-note" aria-label="What happens on this page">
+        <div class="note-mark" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
+        <p class="note-label">Reference conditioning</p>
+        <p>The clip teaches the model <em>how this voice sounds</em> for the next sentence. No gradient update, no fine-tuned checkpoint.</p>
+      </aside>
+    </section>
+
+    <section id="fatal" class="panel notice hidden" role="alert"></section>
+
+    <section id="expired" class="panel notice hidden" aria-live="polite">
+      <h2>This enrollment link is no longer available</h2>
+      <p>Ask OpenClaw for a new link. Links expire and can create only one voice.</p>
+    </section>
+
+    <section id="studio" class="hidden">
+      <div class="workbench">
+      <ol class="steps" aria-label="Create voice steps">
+        <li><span class="step-number">01</span><span>Record sample</span></li>
+        <li><span class="step-number">02</span><span>Choose clip</span></li>
+        <li><span class="step-number">03</span><span>Name and save</span></li>
+      </ol>
+
+      <section id="sample-panel" class="panel" aria-labelledby="sample-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Step 1</p>
+            <h2 id="sample-heading">Record sample</h2>
+          </div>
+          <span id="session-badge" class="badge">checking link</span>
+        </div>
+
+        <p class="hint">
+          Aim for <strong>10–15 seconds</strong> of one person speaking naturally, with a
+          quiet background. The minimum is just over 5 seconds. You can record again
+          before saving.
+        </p>
+
+        <div class="tabs" role="tablist" aria-label="Sample source">
+          <button id="tab-record" class="tab active" type="button" role="tab" aria-selected="true" aria-controls="record-panel">Record sample</button>
+          <button id="tab-upload" class="tab" type="button" role="tab" aria-selected="false" aria-controls="upload-panel">Upload sample</button>
+        </div>
+
+        <div id="record-panel" role="tabpanel" aria-labelledby="tab-record">
+          <div class="record-stage">
+            <button id="record-button" class="button primary" type="button">Record sample</button>
+            <button id="stop-button" class="button danger" type="button" hidden>Stop</button>
+            <div class="meter-wrap">
+              <label for="level" class="sr-only">Microphone level</label>
+              <progress id="level" max="100" value="0">0</progress>
+              <span id="timer" class="timer" aria-live="off">0.0 s</span>
+            </div>
+          </div>
+          <p id="record-status" class="status" aria-live="polite"></p>
+          <div id="recorded-review" class="review hidden">
+            <audio id="recorded-audio" controls preload="metadata"></audio>
+            <div class="button-row">
+              <button id="rerecord-button" class="button secondary" type="button">Re-record</button>
+              <button id="use-recorded-button" class="button primary" type="button">Use this sample</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="upload-panel" role="tabpanel" aria-labelledby="tab-upload" class="hidden">
+          <label class="file-label" for="file-input">Choose an audio file</label>
+          <input id="file-input" type="file" accept="audio/*,.wav,.mp3,.webm,.m4a,.aac,.ogg,.flac">
+          <p class="hint">WAV, MP3, WebM/Opus, and MP4/AAC work when the installed decoder supports them. The server verifies the actual content.</p>
+          <div id="upload-review" class="review hidden">
+            <audio id="uploaded-audio" controls preload="metadata"></audio>
+            <button id="use-upload-button" class="button primary" type="button">Use this sample</button>
+          </div>
+        </div>
+
+        <p id="upload-status" class="status" aria-live="polite"></p>
+      </section>
+
+      <section id="clip-panel" class="panel hidden" aria-labelledby="clip-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Step 2</p>
+            <h2 id="clip-heading">Choose the reference clip</h2>
+          </div>
+          <span id="clip-badge" class="badge good">sample uploaded</span>
+        </div>
+        <p class="hint">
+          Select the most representative stretch. The service sends this clip to the
+          model as conditioning. Your original upload is kept unchanged.
+        </p>
+        <div class="checks" id="checks"></div>
+        <div class="range-grid">
+          <label for="start-range">Start <output id="start-output" for="start-range">0.0 s</output></label>
+          <input id="start-range" type="range" min="0" max="1" step="0.1" value="0">
+          <label for="end-range">End <output id="end-output" for="end-range">0.0 s</output></label>
+          <input id="end-range" type="range" min="0" max="1" step="0.1" value="1">
+        </div>
+        <p id="selection" class="selection" aria-live="polite"></p>
+        <div class="button-row">
+          <button id="choose-again" class="button secondary" type="button">Choose another sample</button>
+          <button id="continue-button" class="button primary" type="button">Continue</button>
+        </div>
+      </section>
+
+      <section id="save-panel" class="panel hidden" aria-labelledby="save-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Step 3</p>
+            <h2 id="save-heading">Name and save</h2>
+          </div>
+        </div>
+        <form id="save-form" novalidate>
+          <label for="voice-name">Voice name</label>
+          <input id="voice-name" name="name" type="text" maxlength="80" required autocomplete="off">
+          <label class="check-label">
+            <input id="authorized" name="authorized" type="checkbox" required>
+            <span>This is my voice, or I have the speaker's permission to create and use this voice.</span>
+          </label>
+          <p class="hint">The attestation is stored with the voice. Speaker identity is not automatically verified.</p>
+          <button id="create-button" class="button primary" type="submit">Create voice</button>
+          <p id="save-status" class="status" aria-live="polite"></p>
+        </form>
+      </section>
+
+      <section id="done-panel" class="panel hidden" aria-labelledby="done-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Voice saved</p>
+            <h2 id="done-heading">Listen to the audition</h2>
+          </div>
+          <span class="badge good">reference-conditioned</span>
+        </div>
+        <p id="done-copy" class="lede"></p>
+        <div id="audition-pending" class="audition-pending">
+          <p>The first audition is being rendered in the local worker.</p>
+          <progress id="audition-progress" max="100" value="15">working</progress>
+        </div>
+        <audio id="audition-audio" controls preload="metadata" class="hidden"></audio>
+        <p id="audition-status" class="status" aria-live="polite"></p>
+        <div class="button-row">
+          <a id="download-audition" class="button secondary hidden" download>Download audition</a>
+          <button id="copy-voice-id" class="button ghost" type="button">Copy voice ID</button>
+        </div>
+        <div class="next">
+          <h3>Generate speech</h3>
+          <p>Ask OpenClaw to generate speech with this voice, or use the <code>clawvoice</code> command line. Generation creates a local download; it does not publish audio or contact Twilio.</p>
+        </div>
+      </section>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>clawvoice · private by default · no analytics, no third-party assets</p>
+  </footer>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

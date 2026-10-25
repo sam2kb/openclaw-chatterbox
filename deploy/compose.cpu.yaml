@@ -1,0 +1,5 @@
+# Explicit CPU evaluation overlay. Not a fallback and not performance-verified.
+services:
+  worker:
+    environment:
+      CLAWVOICE_DEVICE: cpu

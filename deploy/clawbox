@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+if [ -x "$ROOT/.venv/bin/python" ]; then
+  exec "$ROOT/.venv/bin/python" "$ROOT/deploy/clawbox.py" "$@"
+fi
+exec python3 "$ROOT/deploy/clawbox.py" "$@"

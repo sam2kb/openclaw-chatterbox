@@ -1,0 +1,112 @@
+name: openclaw-chatterbox
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-service-common: &service-common
+  read_only: true
+  tmpfs:
+    - /tmp:mode=1777,size=256m
+  stop_grace_period: 45s
+  logging: *logging
+
+services:
+  api:
+    <<: *service-common
+    image: openclaw-chatterbox-api:${CLAWVOICE_RELEASE:-0.1.0}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: api
+    command: ["clawvoice", "serve", "--no-worker", "--host", "0.0.0.0", "--port", "8765"]
+    environment:
+      CLAWVOICE_DATA_DIR: /data
+      CLAWVOICE_MODEL_DIR: /models/chatterbox-turbo
+      CLAWVOICE_BACKEND: turbo
+      CLAWVOICE_DEVICE: cpu
+      CLAWVOICE_BIND_HOST: 0.0.0.0
+      CLAWVOICE_BIND_PORT: "8765"
+      CLAWVOICE_PUBLIC_BASE_URL: ${CLAWVOICE_PUBLIC_BASE_URL:-http://127.0.0.1:8765}
+      CLAWVOICE_ALLOWED_ORIGINS: ${CLAWVOICE_ALLOWED_ORIGINS:-http://127.0.0.1:8765}
+      CLAWVOICE_TOKEN_FILE: /data/secrets/service-token
+      CLAWVOICE_LOG_LEVEL: ${CLAWVOICE_LOG_LEVEL:-info}
+    ports:
+      - "127.0.0.1:${CLAWVOICE_PORT:-8765}:8765"
+    volumes:
+      - clawvoice-data:/data
+      - ${CLAWVOICE_MODELS_DIR:-../models}:/models:ro
+    healthcheck:
+      test: ["CMD", "clawvoice", "healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: on-failure:3
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+
+  worker:
+    <<: *service-common
+    image: openclaw-chatterbox-worker:${CLAWVOICE_RELEASE:-0.1.0}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: worker
+    command: ["clawvoice", "worker"]
+    environment:
+      CLAWVOICE_DATA_DIR: /data
+      CLAWVOICE_MODEL_DIR: /models/chatterbox-turbo
+      CLAWVOICE_BACKEND: turbo
+      CLAWVOICE_DEVICE: ${CLAWVOICE_DEVICE:-cuda}
+      CLAWVOICE_TOKEN_FILE: /data/secrets/service-token
+      CLAWVOICE_LOG_LEVEL: ${CLAWVOICE_LOG_LEVEL:-info}
+      CLAWVOICE_JOB_TIMEOUT_SECONDS: ${CLAWVOICE_JOB_TIMEOUT_SECONDS:-300}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - clawvoice-data:/data
+      - ${CLAWVOICE_MODELS_DIR:-../models}:/models:ro
+    healthcheck:
+      test: ["CMD", "clawvoice", "worker-healthcheck"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+    stop_grace_period: 120s
+    restart: on-failure:3
+    deploy:
+      resources:
+        limits:
+          memory: 24g
+
+  provision:
+    profiles: ["tools"]
+    # Tooling only: root is needed to write the operator-owned model bind mount.
+    # This service is never part of the runtime/API/worker path.
+    user: "0:0"
+    image: openclaw-chatterbox-worker:${CLAWVOICE_RELEASE:-0.1.0}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: worker
+    command: ["clawvoice", "models", "fetch", "--backend", "turbo", "--revision", "749d1c1a46eb10492095d68fbcf55691ccf137cd"]
+    environment:
+      CLAWVOICE_DATA_DIR: /data
+      CLAWVOICE_MODEL_DIR: /models/chatterbox-turbo
+      CLAWVOICE_BACKEND: turbo
+      CLAWVOICE_DEVICE: cpu
+      CLAWVOICE_TOKEN_FILE: /data/secrets/service-token
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HOME: /data/hf-cache
+    volumes:
+      - clawvoice-data:/data
+      - ${CLAWVOICE_MODELS_DIR:-../models}:/models
+    logging: *logging
+
+volumes:
+  clawvoice-data:

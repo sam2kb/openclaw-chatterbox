@@ -1,0 +1,12 @@
+# Explicit GPU overlay. The API does not receive GPU access; only the worker does.
+services:
+  worker:
+    environment:
+      CLAWVOICE_DEVICE: cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

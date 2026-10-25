@@ -1,0 +1,90 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "clawvoice"
+version = "0.1.0"
+description = "Local reference-conditioned Chatterbox voice service and OpenClaw skill"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = "Apache-2.0"
+authors = [{ name = "OpenClaw Chatterbox project" }]
+keywords = ["tts", "chatterbox", "voice", "openclaw"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+dependencies = [
+  "fastapi>=0.115,<0.163",
+  "pydantic>=2.9,<3",
+  "starlette>=0.46,<0.53",
+  "uvicorn>=0.30,<0.55",
+]
+
+[project.optional-dependencies]
+# Candidate only. The Pascal/CUDA compatibility gate must pass before this
+# becomes a release lock. See docs/compatibility.md.
+inference = [
+  "chatterbox-tts @ git+https://github.com/resemble-ai/chatterbox.git@5de7a54aa4e5e2baadb0182dde554908b48b85c2",
+  "resemble-perth @ git+https://github.com/resemble-ai/Perth.git@ff1c8ac55a976971245cdd53c18d6131ca00d993",
+  "torch==2.6.0",
+  "torchaudio==2.6.0",
+]
+dev = [
+  "build>=1.2,<2",
+  "httpx>=0.27,<1",
+  "pytest>=8.3,<10",
+  "pytest-timeout>=2.3,<3",
+  "ruff>=0.9,<1",
+]
+
+[project.scripts]
+clawvoice = "clawvoice.cli:main"
+
+[project.urls]
+Documentation = "https://github.com/resemble-ai/chatterbox"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/clawvoice"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"web" = "clawvoice/web"
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "web", "skills", "deploy", "docs", "tests", "README.md", "AGENTS.md", "THIRD_PARTY_NOTICES.md"]
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+timeout = 60
+filterwarnings = ["error::DeprecationWarning:clawvoice.*"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.ruff.lint.per-file-ignores]
+"src/clawvoice/api.py" = ["B008"]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchaudio = { index = "pytorch-cu124" }
+resemble-perth = { git = "https://github.com/resemble-ai/Perth.git", rev = "ff1c8ac55a976971245cdd53c18d6131ca00d993" }
+
+[tool.uv]
+override-dependencies = [
+  "resemble-perth @ git+https://github.com/resemble-ai/Perth.git@ff1c8ac55a976971245cdd53c18d6131ca00d993",
+]
