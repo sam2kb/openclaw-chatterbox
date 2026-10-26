@@ -69,7 +69,7 @@ class TurboBackend:
     def load(self) -> None:
         from ..modelprovision import verify_model
 
-        verification = verify_model(self.settings.model_dir, backend="turbo", deep=False)
+        verification = verify_model(self.settings.model_dir, backend="turbo", deep=True)
         if not verification["ok"]:
             problems = verification["problems"]
             self.status = "model_missing"
@@ -240,6 +240,11 @@ class TurboBackend:
                     "error": "cuda_oom",
                 }
                 self._last_metrics = metrics
+                self.status = "failed"
+                self.detail = {
+                    "backend": "turbo",
+                    "reason": "CUDA out of memory; reload required",
+                }
                 raise BackendOOM("CUDA out of memory") from exc
             finally:
                 # Never let one profile's conditioning become the next job's

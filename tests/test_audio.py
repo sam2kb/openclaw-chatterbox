@@ -231,3 +231,29 @@ def test_headerless_recording_duration_falls_back_to_bounded_decode(tmp_path, se
     probe = audio.probe(source)
     assert probe.duration_source == "decoded"
     assert 6_300 <= probe.duration_ms <= 6_500
+
+
+def test_unsupported_or_remote_playlist_container_is_rejected(tmp_path, settings, monkeypatch):
+    import json
+    import subprocess
+
+    source = write_wav(tmp_path / "source.wav", seconds=6.4)
+    audio = AudioProcessor(settings)
+
+    def fake_run(self, args, *, timeout):
+        payload = {
+            "streams": [{"codec_name": "aac", "sample_rate": "48000", "channels": 2}],
+            "format": {"format_name": "hls"},
+        }
+        return subprocess.CompletedProcess(args, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(AudioProcessor, "_run", fake_run)
+    with pytest.raises(AudioDecodeError):
+        audio.probe(source)
+
+
+def test_leading_whitespace_text_is_preserved_by_plan(settings):
+    text = "  Hello, this starts with spaces.\n"
+    plan = build_plan({"text": text}, settings=settings, seed=3)
+    chunks = [chunk.text for chunk in plan.text_pieces[0].chunks]
+    assert "".join(chunks) == text

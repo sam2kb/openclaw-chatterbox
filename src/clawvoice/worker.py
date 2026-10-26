@@ -28,6 +28,7 @@ from .errors import (
 )
 from .modelspec import model_identity
 from .speech import PausePiece, SpeechPlan, TextPiece, build_plan
+from .storage import StorageManager
 from .store import Store
 from .util import (
     ensure_private_dir,
@@ -92,6 +93,7 @@ class InferenceWorker:
         self.settings = settings
         self.store = store
         self.audio = audio
+        self.storage = StorageManager(settings, store)
         self.backend = backend
         self.worker_id = worker_id or new_id("wrk")
         self._stop = threading.Event()
@@ -326,9 +328,10 @@ class InferenceWorker:
         rendered_ms = 0
         plan: SpeechPlan | None = None
         try:
-            work_dir = ensure_private_dir(self.settings.artifacts_dir / job_id) or (
-                self.settings.artifacts_dir / job_id
-            )
+            # Each attempt gets its own directory. A stale worker that loses
+            # its lease must never delete a newer attempt's committed files.
+            work_dir = self.settings.artifacts_dir / job_id / new_id("att")
+            ensure_private_dir(work_dir)
             payload = json.loads(job["input_json"])
             controls = json.loads(job["controls_json"])
             if not job.get("voice_id"):
@@ -343,7 +346,12 @@ class InferenceWorker:
                 raise ValidationFailure(
                     "the selected voice was created against a different model revision"
                 )
-            reference = self.store.get_reference_for_voice(job["voice_id"])
+            reference_id = job.get("reference_version_id")
+            reference = (
+                self.store.get_reference_by_id(job["voice_id"], reference_id)
+                if reference_id
+                else self.store.get_reference_for_voice(job["voice_id"])
+            )
             ref_path = safe_storage_path(self.settings.data_dir, reference["normalized_path"])
             if not ref_path.is_file():
                 raise ValidationFailure("the voice reference audio is missing")
@@ -364,8 +372,12 @@ class InferenceWorker:
                 )
                 self._check_cancel(job_id)
                 self.store.update_progress(job_id, self.worker_id, "writing_artifacts")
+                # Admit output before writing; generated audio is subject to the
+                # same private-storage bound as uploads and references.
+                self.storage.ensure_capacity(len(pcm) + 1024 * 1024)
                 artifacts, output_id, master_id, metrics = self._write_artifacts(
                     job=job,
+                    reference=reference,
                     plan=plan,
                     pcm=pcm,
                     rendered_ms=rendered_ms,
@@ -441,6 +453,24 @@ class InferenceWorker:
             )
             if work_dir:
                 self._remove_tree(work_dir)
+            self._backend_ready = False
+            self._last_load_attempt = 0.0
+            self._set_state(
+                "failed",
+                backend=self.settings.backend,
+                reason="CUDA out of memory; worker reload required",
+            )
+            try:
+                if self.backend is not None:
+                    self.backend.shutdown()
+                self.store.renew_worker_lock(
+                    owner=self.worker_id,
+                    lease_seconds=self.settings.worker_lease_seconds,
+                    status="failed",
+                    detail={"backend": self.settings.backend, "reason": "CUDA OOM"},
+                )
+            except Exception:
+                logger.exception("could not mark worker failed after OOM")
             logger.error("job %s ran out of GPU memory", job_id)
         except InferenceError:
             self.store.fail_job(
@@ -483,6 +513,11 @@ class InferenceWorker:
             self._check_deadline(deadline)
             self._check_cancel(job_id)
             if isinstance(piece, PausePiece):
+                if rendered_ms + piece.pause_ms > self.settings.max_output_ms:
+                    raise ValidationFailure(
+                        "generated speech would exceed the configured output duration limit",
+                        details={"max_output_ms": self.settings.max_output_ms},
+                    )
                 output.extend(self.audio.silence_pcm(piece.pause_ms, self.backend.sample_rate))
                 rendered_ms += piece.pause_ms
                 continue
@@ -535,6 +570,11 @@ class InferenceWorker:
                         )
                     )
                     rendered_ms += self.settings.chunk_join_gap_ms
+        if rendered_ms > self.settings.max_output_ms:
+            raise ValidationFailure(
+                "generated speech would exceed the configured output duration limit",
+                details={"max_output_ms": self.settings.max_output_ms},
+            )
         self.store.update_progress(job_id, self.worker_id, "assembling")
         return bytes(output), rendered_ms
 
@@ -550,6 +590,7 @@ class InferenceWorker:
         self,
         *,
         job: dict[str, Any],
+        reference: dict[str, Any],
         plan: SpeechPlan,
         pcm: bytes,
         rendered_ms: int,
@@ -585,6 +626,10 @@ class InferenceWorker:
             "model": model_identity(self.settings.backend)
             if self.settings.backend == "turbo"
             else {"backend": "fake", "real_model": False},
+            "reference": {
+                "version_id": reference["id"],
+                "sha256": reference["normalized_sha256"],
+            },
             "request": {
                 "kind": job["kind"],
                 "preset_requested": job["preset"],
@@ -628,7 +673,7 @@ class InferenceWorker:
                 job_id=job["id"],
                 kind="master",
                 preset="master",
-                relative_path=f"artifacts/{job['id']}/{master_name}",
+                relative_path=f"artifacts/{job['id']}/{work_dir.name}/{master_name}",
                 info=master_info,
                 manifest=master_manifest,
                 expires_at=expires_at,
@@ -659,7 +704,7 @@ class InferenceWorker:
                     job_id=job["id"],
                     kind="output",
                     preset=job["preset"],
-                    relative_path=f"artifacts/{job['id']}/{out_name}",
+                    relative_path=f"artifacts/{job['id']}/{work_dir.name}/{out_name}",
                     info=info,
                     manifest=derived_manifest,
                     expires_at=expires_at,

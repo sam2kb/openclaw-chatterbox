@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS voices (
@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     kind TEXT NOT NULL,
     status TEXT NOT NULL,
     voice_id TEXT REFERENCES voices(id) ON DELETE CASCADE,
+    reference_version_id TEXT,
     session_id TEXT,
     preset TEXT NOT NULL,
     input_json TEXT NOT NULL,
@@ -172,6 +173,7 @@ class Database:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA secure_delete = ON")
         return conn
 
     def initialize(self) -> None:
@@ -181,13 +183,31 @@ class Database:
             conn.execute("PRAGMA journal_mode = WAL")
             conn.execute("PRAGMA synchronous = NORMAL")
             version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, SCHEMA_VERSION):
+            if version > SCHEMA_VERSION:
                 raise RuntimeError(
                     f"database schema {version} is newer than this build ({SCHEMA_VERSION})"
                 )
             conn.executescript(SCHEMA)
+            if version == 1:
+                columns = {
+                    row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()
+                }
+                if "reference_version_id" not in columns:
+                    conn.execute("ALTER TABLE jobs ADD COLUMN reference_version_id TEXT")
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             conn.commit()
+            try:
+                self.path.chmod(0o600)
+            except OSError:
+                pass
+        finally:
+            conn.close()
+
+    def checkpoint(self) -> None:
+        """Remove WAL frames that may still contain previously deleted rows."""
+        conn = self.connect()
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         finally:
             conn.close()
 

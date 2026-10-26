@@ -19,8 +19,11 @@ sample, generate speech, or build a phone greeting from a named voice.
 ## Start every run
 
 1. Run `clawvoice doctor --json`. Continue only if the service is reachable and
-   ready, `torch.installed` and `model.ok` are true, and the worker reports a
-   real model. A fake backend is for tests only; say so and stop.
+   `service.ready.status` is `ready`, and the worker reports a real model
+   (`service.ready.checks.worker.real_model`). The local `torch`/`model.ok`
+   fields describe the machine running the client, not necessarily the host
+   worker; for a sandboxed/remote caller trust the service readiness response.
+   A fake backend is for tests only; say so and stop.
 2. Use the CLI's `--json` output. Do not print the service token or an
    enrollment URL fragment into logs, shell history, or a group chat.
 3. Decide the mode:
@@ -30,6 +33,9 @@ sample, generate speech, or build a phone greeting from a named voice.
      read `{baseDir}/references/generation.md`.
    - For failures and exit codes: `{baseDir}/references/errors.md`.
    - For delivery: `{baseDir}/references/delivery.md`.
+   - If the agent runs in a sandbox/container, read
+     `{baseDir}/references/sandbox.md` before invoking the client; host
+     `requires.bins` does not prove sandbox reachability.
 
 ## Hard boundaries
 

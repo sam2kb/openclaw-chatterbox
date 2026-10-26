@@ -168,6 +168,7 @@ class Settings:
     worker_heartbeat_seconds: int = 10
     enrollment_ttl_seconds: int = 1_800
     artifact_retention_days: int = 7
+    cleanup_interval_seconds: int = 3_600
     max_data_bytes: int = 20 * 1024 * 1024 * 1024
     reference_sample_rate: int = TURBO_SAMPLE_RATE
     reference_max_ms: int = TURBO_REFERENCE_MAX_MS
@@ -233,6 +234,8 @@ class Settings:
             raise ConfigurationError("limits must be positive")
         if self.artifact_retention_days < 1:
             raise ConfigurationError("artifact retention must be at least one day")
+        if self.cleanup_interval_seconds < 0:
+            raise ConfigurationError("cleanup interval cannot be negative")
         _origin_of(self.public_base_url)
         for origin in self.allowed_origins:
             if origin == "*":
@@ -286,6 +289,9 @@ class Settings:
             job_timeout_seconds=_int_env("CLAWVOICE_JOB_TIMEOUT_SECONDS", 300, 10, 3_600),
             worker_lease_seconds=_int_env("CLAWVOICE_WORKER_LEASE_SECONDS", 90, 15, 3_600),
             artifact_retention_days=_int_env("CLAWVOICE_ARTIFACT_RETENTION_DAYS", 7, 1, 365),
+            cleanup_interval_seconds=_int_env(
+                "CLAWVOICE_CLEANUP_INTERVAL_SECONDS", 3_600, 0, 86_400
+            ),
             max_data_bytes=_int_env(
                 "CLAWVOICE_MAX_DATA_BYTES", 20 * 1024 * 1024 * 1024, 1024**3, 10 * 1024**4
             ),

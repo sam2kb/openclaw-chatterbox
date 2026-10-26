@@ -32,7 +32,11 @@ def args_for(tmp_path: Path, workspace: Path | None = None, command: str = "plan
 
 
 def stub_plan(monkeypatch, *, model_ok=True):
-    monkeypatch.setattr(clawbox, "model_report", lambda: {"ok": model_ok, "revision": "pinned", "problems": []})
+    monkeypatch.setattr(
+        clawbox,
+        "model_report",
+        lambda *a, **k: {"ok": model_ok, "revision": "pinned", "problems": []},
+    )
     monkeypatch.setattr(
         clawbox,
         "docker_report",

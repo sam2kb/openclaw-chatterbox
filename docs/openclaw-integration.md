@@ -49,10 +49,12 @@ its effective allowlists and tool policy.
    skill directory (for the default single-admin setup,
    `<workspace>/skills/chatterbox-voice/`). Stage the service token in the
    operator's existing secret flow, mode 0600.
-3. **Readiness.** `clawvoice doctor --json` must show the service ready and the
-   real model. `openclaw skills check` must show this skill ready for `main`.
-   Start a new session or run the version-appropriate refresh so the catalog is
-   rebuilt.
+3. **Readiness.** `clawvoice doctor --json` must show
+   `service.ready.status == "ready"` and the worker's
+   `checks.worker.real_model == true`. Local `torch.installed`/`model.ok` fields
+   only describe the client host; a lightweight client need not have either.
+   `openclaw skills check` must show this skill ready for `main`. Start a new
+   session or run the version-appropriate refresh so the catalog is rebuilt.
 4. **Canary.** In a new private session with `main`, ask for a short speech
    artifact from a test voice; verify job polling, artifact download, and
    channel attachment. Then ask for the enrollment-link flow. Do not use a real

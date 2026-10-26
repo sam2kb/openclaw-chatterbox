@@ -29,7 +29,9 @@
 ## Input and files
 
 - Uploads are opaque bytes. FFprobe decides the actual format; filename and MIME
-  are not trusted.
+  are not trusted. Only a small allowlist of common audio containers is accepted,
+  and decoder invocations use `-protocol_whitelist file` to block playlist/remote
+  protocol fetches.
 - Byte limits, decoded-duration limits, decoder runtime limits, text length,
   segment count, pause totals, output duration, queue depth, storage use, and
   artifact retention are bounded independently.
@@ -42,8 +44,7 @@
 - There is no public endpoint accepting a server filesystem path, a remote media
   URL, or an uploaded pickle/checkpoint. The only model inputs are the pinned
   local safetensors files fetched by an explicit operator command.
-- The only model inputs are the pinned local safetensors files fetched by an
-  explicit operator command. Enrolled audio is never executed as code.
+- Enrolled audio is never executed as code.
 
 ## Web
 
@@ -61,9 +62,10 @@
 
 - Do not log service tokens, enrollment tokens, raw recordings, or synthesis
   text. Uvicorn access logging is disabled by default in `clawvoice serve`.
-- Job storage retains the request text because the job needs it; API status
-  responses expose only a text hash and counts. Error messages are stable,
-  short, and do not include exception internals or user text.
+- Job storage retains the request text while the job needs it. After the audio
+  retention window, cleanup redacts terminal job text; API status responses
+  expose only a text hash and counts. Error messages are stable, short, and do
+  not include exception internals or user text.
 - Manifest fields include text hashes, not text.
 - The doctor does not print credentials or file contents; it reports model
   directories but not secret paths containing tokens.
@@ -92,3 +94,6 @@
   recovery. The token is a separate secret; do not include it in ordinary
   backups if the backup store is less protected.
 - SQLite WAL must remain on a local filesystem for this single-host design.
+  Connections enable `secure_delete`; explicit voice deletion checkpoints and
+  truncates WAL so deleted metadata is not left in old WAL frames. This is
+  best-effort deletion on the local filesystem, not cryptographic erasure.

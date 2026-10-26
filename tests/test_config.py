@@ -69,3 +69,32 @@ def test_environment_token_must_be_long(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWVOICE_SERVICE_TOKEN", "short")
     with pytest.raises(ConfigurationError):
         read_service_token(tmp_path / "unused", create=False)
+
+
+def test_v1_database_migration_adds_job_reference_column(tmp_path):
+    import sqlite3
+
+    from clawvoice.db import Database
+
+    path = tmp_path / "old.sqlite3"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE jobs (
+            id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            voice_id TEXT,
+            created_at INTEGER NOT NULL
+        );
+        PRAGMA user_version = 1;
+        """
+    )
+    conn.commit()
+    conn.close()
+    db = Database(path)
+    db.initialize()
+    with db.connect() as check:
+        columns = {row[1] for row in check.execute("PRAGMA table_info(jobs)")}
+        version = check.execute("PRAGMA user_version").fetchone()[0]
+    assert "reference_version_id" in columns
+    assert version == 2

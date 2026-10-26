@@ -19,7 +19,25 @@ from .errors import UnavailableError, ValidationFailure
 from .modelspec import TURBO_DECODER_CONDITIONING_MS, TURBO_ENCODER_CONDITIONING_MS
 from .util import ensure_private_dir, sha256_file
 
-_PCM_BYTES_PER_SAMPLE = 2
+_ALLOWED_FORMATS = {
+    "wav",
+    "wave",
+    "mp3",
+    "ogg",
+    "webm",
+    "matroska",
+    "mov",
+    "mp4",
+    "m4a",
+    "3gp",
+    "3g2",
+    "mj2",
+    "flac",
+    "aac",
+    "aiff",
+    "aif",
+    "caf",
+}
 
 
 class AudioDecodeError(ValidationFailure):
@@ -89,11 +107,13 @@ class AudioProcessor:
         except OSError as exc:
             raise UnavailableError("audio decoder could not be started") from exc
 
-    def probe(self, path: Path) -> ProbeResult:
+    def probe(self, path: Path, *, enforce_reference_limit: bool = True) -> ProbeResult:
         args = [
             self.settings.ffprobe,
             "-v",
             "error",
+            "-protocol_whitelist",
+            "file",
             "-select_streams",
             "a:0",
             "-show_entries",
@@ -120,6 +140,12 @@ class AudioProcessor:
             size = int(fmt.get("size") or path.stat().st_size)
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise AudioDecodeError("the upload has no decodable audio stream") from exc
+        format_tokens = {token.strip() for token in format_name.split(",")}
+        if not (format_tokens & _ALLOWED_FORMATS):
+            raise AudioDecodeError(
+                "the upload container is not on the supported audio format list",
+                details={"format": format_name},
+            )
         if sample_rate <= 0 or channels <= 0:
             raise AudioDecodeError("the upload reports an invalid audio layout")
         duration_source = "ffprobe"
@@ -132,7 +158,7 @@ class AudioProcessor:
             duration_source = "decoded"
         else:
             duration_ms = int(round(duration * 1000))
-        if duration_ms > self.settings.max_reference_decoded_ms:
+        if enforce_reference_limit and duration_ms > self.settings.max_reference_decoded_ms:
             raise ValidationFailure(
                 "the reference recording is longer than the configured limit",
                 details={
@@ -167,6 +193,8 @@ class AudioProcessor:
             "-hide_banner",
             "-loglevel",
             "error",
+            "-protocol_whitelist",
+            "file",
             "-y",
             "-i",
             str(path),
@@ -209,6 +237,8 @@ class AudioProcessor:
             "-hide_banner",
             "-loglevel",
             "info",
+            "-protocol_whitelist",
+            "file",
             "-i",
             str(path),
             "-vn",
@@ -354,6 +384,8 @@ class AudioProcessor:
             "-hide_banner",
             "-loglevel",
             "error",
+            "-protocol_whitelist",
+            "file",
             "-y",
             "-i",
             str(source),
@@ -473,6 +505,8 @@ class AudioProcessor:
                 "-hide_banner",
                 "-loglevel",
                 "error",
+                "-protocol_whitelist",
+                "file",
                 "-y",
                 "-i",
                 str(master),
@@ -493,6 +527,8 @@ class AudioProcessor:
                 "-hide_banner",
                 "-loglevel",
                 "error",
+                "-protocol_whitelist",
+                "file",
                 "-y",
                 "-i",
                 str(master),
@@ -513,6 +549,8 @@ class AudioProcessor:
                 "-hide_banner",
                 "-loglevel",
                 "error",
+                "-protocol_whitelist",
+                "file",
                 "-y",
                 "-i",
                 str(master),
@@ -547,7 +585,7 @@ class AudioProcessor:
             raise
         size = output.stat().st_size
         if preset == "mp3":
-            probe = self.probe(output)
+            probe = self.probe(output, enforce_reference_limit=False)
             return {
                 "media_type": "audio/mpeg",
                 "format": "mp3",

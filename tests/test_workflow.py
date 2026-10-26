@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from clawvoice.util import now_ms
 from tests.helpers import create_direct_voice, wait_job, wait_ready
 
 
@@ -117,7 +118,6 @@ def test_restart_preserves_saved_voice(settings, headers, reference):
 
 def test_expired_artifact_cleanup_removes_private_file(client, headers, reference, settings):
     from clawvoice.storage import StorageManager
-    from clawvoice.util import now_ms
 
     result = create_direct_voice(client, headers, reference)
     response = client.post(
@@ -130,12 +130,17 @@ def test_expired_artifact_cleanup_removes_private_file(client, headers, referenc
     row = client.app.state.store.get_artifact_row(artifact["id"])
     path = client.app.state.storage.resolve(row["path"])
     assert path.is_file()
+    old = now_ms() - settings.artifact_retention_days * 86_400_000 - 1
     with client.app.state.store.db.transaction(immediate=True) as conn:
         conn.execute("UPDATE artifacts SET expires_at=? WHERE id=?", (now_ms() - 1, artifact["id"]))
+        conn.execute("UPDATE jobs SET finished_at=? WHERE id=?", (old, job["id"]))
     removed = StorageManager(settings, client.app.state.store).cleanup_expired_artifacts()
     assert removed == 1
     assert not path.exists()
     assert client.get(f"/api/v1/artifacts/{artifact['id']}", headers=headers).status_code == 404
+    with client.app.state.store.db.connect() as conn:
+        redacted = conn.execute("SELECT input_json FROM jobs WHERE id=?", (job["id"],)).fetchone()
+    assert redacted["input_json"] == '{"redacted":true}'
 
 
 def test_revise_voice_keeps_previous_reference_version(client, headers, reference, tmp_path, settings):
@@ -166,3 +171,116 @@ def test_revise_voice_keeps_previous_reference_version(client, headers, referenc
     assert len(rows) == 2
     for row in rows:
         assert client.app.state.storage.resolve(row["normalized_path"]).is_file()
+
+
+def test_queued_job_uses_reference_snapshot_after_revision(settings, headers, reference, tmp_path):
+    from fastapi.testclient import TestClient
+
+    from clawvoice.api import create_app
+    from clawvoice.worker import InferenceWorker
+    from tests.helpers import create_direct_voice, wait_ready, write_wav
+
+    application = create_app(settings, start_worker=False)
+    with TestClient(application) as client:
+        result = create_direct_voice(client, headers, reference)
+        old_ref = result["voice"]["reference"]["id"]
+        application.state.store.request_cancel(result["audition_job"]["id"])
+        submitted = client.post(
+            "/api/v1/synthesis-jobs",
+            headers=headers,
+            json={
+                "voice_id": result["voice"]["id"],
+                "text": "Snapshot text.",
+                "preset": "master",
+                "seed": 77,
+            },
+        )
+        assert submitted.status_code == 202, submitted.text
+        job_id = submitted.json()["job"]["id"]
+        revised_sample = write_wav(tmp_path / "revised.wav", seconds=6.6, frequency=500)
+        revised = client.post(
+            f"/api/v1/voices/{result['voice']['id']}/reference",
+            params={"authorized": "true"},
+            headers={**headers, "Content-Type": "application/octet-stream"},
+            content=revised_sample.read_bytes(),
+        )
+        assert revised.status_code == 202, revised.text
+        assert revised.json()["voice"]["reference"]["id"] != old_ref
+
+        worker = InferenceWorker(settings, application.state.store, application.state.audio)
+        worker.start_thread()
+        try:
+            wait_ready(client, headers, timeout=15)
+            job = wait_job(client, headers, job_id, timeout=20)
+            assert job["status"] == "succeeded", job
+            assert job["reference_version_id"] == old_ref
+            assert job["artifacts"][0]["manifest"]["reference"]["version_id"] == old_ref
+        finally:
+            worker.stop(timeout=10)
+
+
+def test_pause_cannot_bypass_output_duration_limit(settings, headers, reference):
+    settings.max_output_ms = 500
+    from fastapi.testclient import TestClient
+
+    from clawvoice.api import create_app
+    from tests.helpers import create_direct_voice, wait_job
+
+    app = create_app(settings, start_worker=True)
+    with TestClient(app) as client:
+        result = create_direct_voice(client, headers, reference)
+        response = client.post(
+            "/api/v1/synthesis-jobs",
+            headers=headers,
+            json={
+                "voice_id": result["voice"]["id"],
+                "segments": [
+                    {"type": "text", "text": "Hi."},
+                    {"type": "pause", "pause_ms": 2000},
+                ],
+                "preset": "master",
+            },
+        )
+        assert response.status_code == 202
+        job = wait_job(client, headers, response.json()["job"]["id"])
+        assert job["status"] == "failed"
+        assert job["error"]["code"] == "validation_error"
+
+
+def test_cleanup_orphans_removes_only_unreferenced_old_files(client, headers, reference, settings):
+    from clawvoice.storage import StorageManager
+
+    result = create_direct_voice(client, headers, reference)
+    response = client.post(
+        "/api/v1/synthesis-jobs",
+        headers=headers,
+        json={"voice_id": result["voice"]["id"], "text": "Keep this.", "preset": "master"},
+    )
+    job = wait_job(client, headers, response.json()["job"]["id"])
+    referenced = client.app.state.store.get_artifact_row(job["artifacts"][0]["id"])
+    referenced_path = client.app.state.storage.resolve(referenced["path"])
+    orphan_dir = settings.artifacts_dir / "job_000000000000000000000000"
+    orphan_dir.mkdir(parents=True)
+    orphan = orphan_dir / "orphan.wav"
+    orphan.write_bytes(b"ORPHAN")
+    old = 1
+    import os
+
+    os.utime(orphan, (old, old))
+    os.utime(orphan_dir, (old, old))
+    removed = StorageManager(settings, client.app.state.store).cleanup_orphans(grace_seconds=0)
+    assert removed >= 1
+    assert not orphan.exists()
+    assert referenced_path.exists()
+
+
+def test_leading_whitespace_text_is_accepted_not_500(client, headers, reference):
+    result = create_direct_voice(client, headers, reference)
+    response = client.post(
+        "/api/v1/synthesis-jobs",
+        headers=headers,
+        json={"voice_id": result["voice"]["id"], "text": "  Leading spaces.", "preset": "master"},
+    )
+    assert response.status_code == 202, response.text
+    job = wait_job(client, headers, response.json()["job"]["id"])
+    assert job["status"] == "succeeded", job

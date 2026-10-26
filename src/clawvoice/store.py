@@ -130,6 +130,7 @@ class Store:
                     conn,
                     kind="audition",
                     voice_id=voice_id,
+                    reference_version_id=reference["id"],
                     session_id=session_id,
                     preset=audition.get("preset", "master"),
                     input_payload=audition["input"],
@@ -234,6 +235,7 @@ class Store:
                 conn,
                 kind="audition",
                 voice_id=voice_id,
+                reference_version_id=reference["id"],
                 session_id=None,
                 preset=audition.get("preset", "master"),
                 input_payload=audition["input"],
@@ -347,6 +349,20 @@ class Store:
             ).fetchone()
             if row is None:
                 raise NotFoundError("voice reference not found")
+            return dict(row)
+
+    def get_reference_by_id(self, voice_id: str, reference_id: str) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT rv.* FROM reference_versions rv
+                JOIN voices v ON v.id = rv.voice_id
+                WHERE rv.id=? AND rv.voice_id=? AND v.status='active'
+                """,
+                (reference_id, voice_id),
+            ).fetchone()
+            if row is None:
+                raise NotFoundError("voice reference version not found")
             return dict(row)
 
     def rename_voice(self, voice_id: str, name: str) -> dict[str, Any]:
@@ -464,6 +480,34 @@ class Store:
                 (now,),
             )
             return cur.rowcount
+
+    def purge_expired_enrollment_sessions(self, now: int | None = None) -> list[str]:
+        """Delete expired enrollment metadata and return staged files to unlink.
+
+        The service may still address a completed session's audition job and
+        artifact by ID, but the expired enrollment credential and staged
+        recording are removed. Voice originals live under voices/, not here.
+        """
+        now = now or now_ms()
+        paths: list[str] = []
+        with self.db.transaction(immediate=True) as conn:
+            sessions = conn.execute(
+                "SELECT id FROM enrollment_sessions WHERE expires_at <= ?", (now,)
+            ).fetchall()
+            for session in sessions:
+                for row in conn.execute(
+                    "SELECT original_path FROM enrollment_uploads WHERE session_id=?",
+                    (session["id"],),
+                ).fetchall():
+                    paths.append(row["original_path"])
+                conn.execute("DELETE FROM enrollment_sessions WHERE id=?", (session["id"],))
+            if sessions:
+                conn.execute(
+                    "INSERT INTO audit_events (created_at, action, subject, detail_json) "
+                    "VALUES (?, 'enrollment.expired_purged', NULL, ?)",
+                    (now, json.dumps({"count": len(sessions)})),
+                )
+        return sorted(set(paths))
 
     def replace_enrollment_upload(
         self,
@@ -601,6 +645,7 @@ class Store:
         *,
         kind: str,
         voice_id: str | None,
+        reference_version_id: str | None,
         session_id: str | None,
         preset: str,
         input_payload: dict[str, Any],
@@ -613,14 +658,15 @@ class Store:
         conn.execute(
             """
             INSERT INTO jobs (
-                id, kind, status, voice_id, session_id, preset, input_json,
-                controls_json, seed, progress, max_attempts, created_at
-            ) VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+                id, kind, status, voice_id, reference_version_id, session_id, preset,
+                input_json, controls_json, seed, progress, max_attempts, created_at
+            ) VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
             """,
             (
                 job_id,
                 kind,
                 voice_id,
+                reference_version_id,
                 session_id,
                 preset,
                 json.dumps(input_payload, ensure_ascii=False, sort_keys=True),
@@ -656,6 +702,7 @@ class Store:
                 conn,
                 kind="synthesis",
                 voice_id=voice_id,
+                reference_version_id=voice["reference_version_id"],
                 session_id=None,
                 preset=preset,
                 input_payload=input_payload,
@@ -693,6 +740,7 @@ class Store:
                 conn,
                 kind="audition",
                 voice_id=voice_id,
+                reference_version_id=voice["reference_version_id"],
                 session_id=None,
                 preset="master",
                 input_payload=input_payload,
@@ -729,6 +777,14 @@ class Store:
     ) -> dict[str, Any] | None:
         now = now or now_ms()
         with self.db.transaction(immediate=True) as conn:
+            lock = conn.execute("SELECT owner, lease_expires_at FROM worker_lock WHERE id=1").fetchone()
+            if (
+                lock is None
+                or lock["owner"] != worker_id
+                or not lock["lease_expires_at"]
+                or lock["lease_expires_at"] < now
+            ):
+                return None
             row = conn.execute(
                 "SELECT * FROM jobs WHERE status='queued' ORDER BY created_at, id LIMIT 1"
             ).fetchone()
@@ -737,7 +793,8 @@ class Store:
             cur = conn.execute(
                 """
                 UPDATE jobs SET status='running', worker_id=?, progress='starting',
-                    attempts=attempts+1, started_at=?, heartbeat_at=?, lease_expires_at=?
+                    attempts=attempts+1, started_at=?, heartbeat_at=?, lease_expires_at=?,
+                    error_code=NULL, error_message=NULL
                 WHERE id=? AND status='queued'
                 """,
                 (
@@ -963,7 +1020,8 @@ class Store:
             conn.execute(
                 """
                 UPDATE jobs SET status='succeeded', finished_at=?, progress='succeeded',
-                    output_artifact_id=?, master_artifact_id=?, metrics_json=?
+                    output_artifact_id=?, master_artifact_id=?, metrics_json=?,
+                    error_code=NULL, error_message=NULL
                 WHERE id=? AND status='running' AND worker_id=?
                 """,
                 (
@@ -1045,6 +1103,18 @@ class Store:
             if row is None:
                 raise NotFoundError("audition artifact not found")
             return dict(row)
+
+    def redact_terminal_job_texts(self, *, cutoff_ms: int) -> int:
+        """Remove request text from terminal jobs after the audio retention window."""
+        with self.db.transaction(immediate=True) as conn:
+            cur = conn.execute(
+                "UPDATE jobs SET input_json='{\"redacted\":true}' "
+                "WHERE status IN ('succeeded','failed','canceled') "
+                "AND finished_at IS NOT NULL AND finished_at < ? "
+                "AND input_json != '{\"redacted\":true}'",
+                (cutoff_ms,),
+            )
+            return cur.rowcount
 
     def expire_artifacts(self, *, now: int | None = None) -> list[str]:
         now = now or now_ms()
@@ -1220,6 +1290,7 @@ class Store:
             "kind": job["kind"],
             "status": status,
             "voice_id": job.get("voice_id"),
+            "reference_version_id": job.get("reference_version_id"),
             "preset": job["preset"],
             "progress": job["progress"],
             "cancel_requested": bool(job["cancel_requested"]),

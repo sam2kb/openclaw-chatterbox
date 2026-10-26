@@ -25,6 +25,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "deploy" / "release-manifest.json"
 SKILL_SRC = ROOT / "skills" / "chatterbox-voice"
+if not SKILL_SRC.is_dir():
+    SKILL_SRC = ROOT / "skill" / "chatterbox-voice"
 COMPOSE = ROOT / "deploy" / "compose.yaml"
 GPU = ROOT / "deploy" / "compose.gpu.yaml"
 CPU = ROOT / "deploy" / "compose.cpu.yaml"
@@ -217,14 +219,24 @@ def openclaw_inventory(workspace: Path | None) -> dict[str, Any]:
     }
 
 
-def model_report() -> dict[str, Any]:
+def host_model_dir(args: argparse.Namespace) -> Path:
+    if getattr(args, "model_dir", None):
+        return Path(args.model_dir).expanduser().resolve()
+    base = env_file_value(args.env_file, "CLAWVOICE_MODELS_DIR", "../models")
+    path = Path(base).expanduser()
+    if not path.is_absolute():
+        path = (COMPOSE.parent / path).resolve()
+    return path / "chatterbox-turbo"
+
+
+def model_report(model_dir: Path | None = None) -> dict[str, Any]:
     cli = find_cli()
     if not cli:
         return {"ok": False, "reason": "clawvoice_not_on_path"}
-    result = run(
-        [cli, "models", "verify", "--backend", "turbo", "--json"],
-        timeout=180,
-    )
+    command = [cli, "models", "verify", "--backend", "turbo", "--json"]
+    if model_dir is not None:
+        command.extend(["--dir", str(model_dir)])
+    result = run(command, timeout=180)
     try:
         payload = json.loads(result.get("stdout") or "{}")
     except json.JSONDecodeError:
@@ -232,6 +244,7 @@ def model_report() -> dict[str, Any]:
     return {
         "ok": bool(payload.get("ok")),
         "revision": payload.get("revision"),
+        "model_dir": payload.get("model_dir"),
         "problems": payload.get("problems", [])[:12],
         "command_returncode": result.get("returncode"),
     }
@@ -259,6 +272,45 @@ def docker_report() -> dict[str, Any]:
     }
 
 
+def wait_container_ready(
+    args: argparse.Namespace, *, root: Path | None = None, timeout: float = 180.0
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    last: dict[str, Any] = {"ready": False, "reason": "not_started"}
+    while time.monotonic() < deadline:
+        result = run(
+            compose_command(
+                args,
+                "exec",
+                "-T",
+                "api",
+                "clawvoice",
+                "doctor",
+                "--json",
+                "--require-ready",
+                root=root,
+            ),
+            timeout=60,
+            env_overrides=release_env(load_manifest().get("release")),
+        )
+        try:
+            payload = json.loads(result.get("stdout") or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        ready = (payload.get("service") or {}).get("ready") or {}
+        last = {
+            "ready": bool(
+                result.get("returncode") == 0 and ready.get("status") == "ready"
+            ),
+            "reason": ready.get("reason"),
+            "doctor_exit": result.get("returncode"),
+        }
+        if last["ready"]:
+            return last
+        time.sleep(3.0)
+    return last
+
+
 def wait_live(port: int, *, timeout: float = 60.0) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     last: dict[str, Any] = {"reachable": False}
@@ -268,6 +320,25 @@ def wait_live(port: int, *, timeout: float = 60.0) -> dict[str, Any]:
             return last
         time.sleep(1.0)
     return last
+
+
+def image_id(image: str | None) -> str | None:
+    if not image:
+        return None
+    docker = which("docker")
+    if not docker:
+        return None
+    result = run([docker, "image", "inspect", "--format", "{{.Id}}", image], timeout=20)
+    return result.get("stdout") or None if result.get("returncode") == 0 else None
+
+
+def image_present(image: str | None) -> bool:
+    if not image:
+        return False
+    docker = which("docker")
+    if not docker:
+        return False
+    return run([docker, "image", "inspect", image], timeout=20).get("returncode") == 0
 
 
 def disk_report() -> dict[str, Any]:
@@ -282,7 +353,8 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     manifest = load_manifest()
     workspace = Path(args.openclaw_workspace).expanduser() if args.openclaw_workspace else None
     target = skill_target(workspace)
-    model = model_report()
+    model_dir = host_model_dir(args)
+    model = model_report(model_dir)
     port = int(env_file_value(args.env_file, "CLAWVOICE_PORT", "8765"))
     docker = docker_report()
     overrides = ["--gpu"] if args.gpu else (["--cpu"] if args.cpu else [])
@@ -318,6 +390,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
         "prerequisites": {
             "docker": docker,
             "model": model,
+            "model_dir": str(model_dir),
             "python": sys.version.split()[0],
             "disk": disk_report(),
             "port": port_status(port),
@@ -328,6 +401,12 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
         "skill": skill_diff(target) if target else {"target": None, "exists": False, "drift": None},
         "service": {
             "compose_files": compose_files,
+            "api_image_present": image_present((manifest.get("images") or {}).get("api", {}).get("tag")),
+            "worker_image_present": image_present((manifest.get("images") or {}).get("worker", {}).get("tag")),
+            "api_image_actual_id": image_id((manifest.get("images") or {}).get("api", {}).get("tag")),
+            "worker_image_actual_id": image_id((manifest.get("images") or {}).get("worker", {}).get("tag")),
+            "api_image_id_expected": (manifest.get("images") or {}).get("api", {}).get("local_image_id"),
+            "worker_image_id_expected": (manifest.get("images") or {}).get("worker", {}).get("local_image_id"),
             "gpu_overlay": bool(args.gpu),
             "cpu_overlay": bool(args.cpu),
             "env_file": args.env_file,
@@ -362,12 +441,27 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
         warnings.append("The configured loopback port is already in use.")
     if not plan["release"]["target_support_verified"]:
         warnings.append("The release manifest says target GPU support is unverified.")
+    if not args.gpu and not args.cpu:
+        warnings.append("No device overlay selected; choose --gpu or --cpu explicitly.")
+    if not plan["service"]["api_image_present"]:
+        warnings.append("The API image is not present locally; build it before install/upgrade.")
+    if not plan["service"]["worker_image_present"]:
+        warnings.append("The worker image is not present locally; build it on the target before install.")
     return plan
 
 
 def require_apply(args: argparse.Namespace) -> None:
     if not args.apply:
         raise SystemExit("refusing to mutate live state without --apply")
+
+
+def require_target_gate(args: argparse.Namespace, manifest: dict[str, Any]) -> None:
+    if (manifest.get("runtime") or {}).get("target_support_verified") is False:
+        if not getattr(args, "allow_unverified_target", False):
+            raise SystemExit(
+                "target support is unverified; run the GPU acceptance gate or pass "
+                "--allow-unverified-target explicitly for a candidate install"
+            )
 
 
 def require_workspace(args: argparse.Namespace) -> Path:
@@ -382,6 +476,9 @@ def require_workspace(args: argparse.Namespace) -> Path:
     assert target is not None
     if target.parent.parent != workspace:
         raise SystemExit("skill path escaped the OpenClaw workspace")
+    resolved_parent = target.parent.resolve()
+    if resolved_parent != workspace / "skills" or target.is_symlink() or target.parent.is_symlink():
+        raise SystemExit("refusing a skill path with a symlink or unexpected parent")
     return workspace
 
 
@@ -457,18 +554,21 @@ def backup_root() -> Path:
     return path
 
 
-def compose_command(args: argparse.Namespace, *extra: str) -> list[str]:
+def compose_command(
+    args: argparse.Namespace, *extra: str, root: Path | None = None
+) -> list[str]:
     docker = which("docker")
     if not docker:
         raise SystemExit("docker is not installed")
+    root = Path(root) if root else ROOT
     command = [docker, "compose"]
     if args.env_file:
         command += ["--env-file", str(Path(args.env_file).expanduser())]
-    command += ["-f", str(COMPOSE)]
+    command += ["-f", str(root / "deploy" / "compose.yaml")]
     if args.gpu:
-        command += ["-f", str(GPU)]
+        command += ["-f", str(root / "deploy" / "compose.gpu.yaml")]
     elif args.cpu:
-        command += ["-f", str(CPU)]
+        command += ["-f", str(root / "deploy" / "compose.cpu.yaml")]
     command += list(extra)
     return command
 
@@ -481,6 +581,18 @@ def apply_install(args: argparse.Namespace) -> int:
         raise SystemExit("refusing install: pinned model is not provisioned and verified")
     if args.gpu and args.cpu:
         raise SystemExit("--gpu and --cpu are mutually exclusive")
+    if not args.gpu and not args.cpu:
+        raise SystemExit("choose --gpu or --cpu explicitly; there is no implicit device mode")
+    manifest = load_manifest()
+    require_target_gate(args, manifest)
+    for label, image, expected in (
+        ("API", (manifest.get("images") or {}).get("api", {}).get("tag"), (manifest.get("images") or {}).get("api", {}).get("local_image_id")),
+        ("worker", (manifest.get("images") or {}).get("worker", {}).get("tag"), (manifest.get("images") or {}).get("worker", {}).get("local_image_id")),
+    ):
+        if not image_present(image):
+            raise SystemExit(f"{label} image is not present locally: {image}; build it first")
+        if expected and image_id(image) != expected:
+            raise SystemExit(f"{label} image ID does not match the release manifest")
     backup = backup_root() / "skill"
     backup.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if not skill_target(workspace).exists():
@@ -496,8 +608,12 @@ def apply_install(args: argparse.Namespace) -> int:
             "docker compose up failed; skill was not changed. "
             f"exit={result.get('returncode')} stderr={result.get('stderr', '')[:300]}"
         )
-    skill_result = stage_skill(workspace, backup=backup)
     live = wait_live(int(env_file_value(args.env_file, "CLAWVOICE_PORT", "8765")))
+    readiness = wait_container_ready(args) if live.get("reachable") else {"ready": False, "reason": "api_unreachable"}
+    if not readiness.get("ready"):
+        print(json.dumps({"mode": "install", "applied": False, "live": live, "readiness": readiness}, indent=2, sort_keys=True))
+        return 1
+    skill_result = stage_skill(workspace, backup=backup)
     state = load_release_state()
     state.update(
         {
@@ -506,6 +622,7 @@ def apply_install(args: argparse.Namespace) -> int:
             "backup": skill_result["backup"],
             "gpu": bool(args.gpu),
             "cpu": bool(args.cpu),
+            "release_root": str(ROOT),
             "installed_at": datetime.now(UTC).isoformat(),
         }
     )
@@ -516,6 +633,7 @@ def apply_install(args: argparse.Namespace) -> int:
         "skill": skill_result,
         "compose": result,
         "live": live,
+        "readiness": readiness,
         "warnings": plan["warnings"],
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
@@ -526,15 +644,28 @@ def apply_verify(args: argparse.Namespace) -> int:
     workspace = Path(args.openclaw_workspace).expanduser().resolve() if args.openclaw_workspace else None
     target = skill_target(workspace)
     diff = skill_diff(target) if target else None
+    container_doctor = run(
+        compose_command(args, "exec", "-T", "api", "clawvoice", "doctor", "--json", "--require-ready"),
+        timeout=180,
+    )
     cli = find_cli()
-    doctor = run([cli, "doctor", "--json"], timeout=180) if cli else None
+    doctor = (
+        container_doctor
+        if container_doctor.get("returncode") == 0
+        else (run([cli, "doctor", "--json", "--require-ready"], timeout=180) if cli else None)
+    )
     compose_ps = run(compose_command(args, "ps", "--format", "json"), timeout=30)
+    manifest = load_manifest()
+    expected_api_id = (manifest.get("images") or {}).get("api", {}).get("local_image_id")
+    actual_api_id = image_id((manifest.get("images") or {}).get("api", {}).get("tag"))
+    image_ok = not expected_api_id or actual_api_id == expected_api_id
     ok = bool(
         doctor
         and doctor.get("returncode") == 0
         and diff
         and diff.get("exists")
         and not diff.get("drift")
+        and image_ok
     )
     payload = {
         "mode": "verify",
@@ -542,6 +673,7 @@ def apply_verify(args: argparse.Namespace) -> int:
         "skill": diff,
         "doctor": doctor,
         "compose_ps": compose_ps,
+        "image": {"expected_id": expected_api_id, "actual_id": actual_api_id, "ok": image_ok},
         "state": load_release_state(),
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
@@ -559,6 +691,18 @@ def apply_upgrade(args: argparse.Namespace) -> int:
     )
     if (new_manifest.get("source") or {}).get("model_revision") != (load_manifest().get("source") or {}).get("model_revision"):
         raise SystemExit("model revision changed; run a new compatibility gate before upgrading")
+    require_target_gate(args, new_manifest)
+    if not args.gpu and not args.cpu:
+        raise SystemExit("choose --gpu or --cpu explicitly; there is no implicit device mode")
+    new_images = new_manifest.get("images") or {}
+    for label, image, expected in (
+        ("API", (new_images.get("api") or {}).get("tag"), (new_images.get("api") or {}).get("local_image_id")),
+        ("worker", (new_images.get("worker") or {}).get("tag"), (new_images.get("worker") or {}).get("local_image_id")),
+    ):
+        if not image_present(image):
+            raise SystemExit(f"{label} image is not present locally: {image}; build the new release first")
+        if expected and image_id(image) != expected:
+            raise SystemExit(f"{label} image ID does not match the new release manifest")
     old_state = load_release_state()
     backup = backup_root() / "skill"
     backup.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -573,10 +717,30 @@ def apply_upgrade(args: argparse.Namespace) -> int:
     finally:
         SKILL_SRC = saved_src
     result = run(
-        compose_command(args, "up", "-d", "--no-build"),
+        compose_command(args, "up", "-d", "--no-build", root=new_release),
         timeout=300,
         env_overrides=release_env(new_manifest.get("release")),
     )
+    readiness = {"ready": False, "reason": "compose_failed"}
+    if result.get("returncode") == 0:
+        readiness = wait_container_ready(args, root=new_release)
+    if result.get("returncode") != 0 or not readiness.get("ready"):
+        # Restore the pre-upgrade skill if the deployment did not reach readiness.
+        if skill_result.get("backup"):
+            restore_skill(workspace, Path(skill_result["backup"]))
+        else:
+            target = skill_target(workspace)
+            if target:
+                shutil.rmtree(target, ignore_errors=True)
+        payload = {
+            "mode": "upgrade",
+            "applied": False,
+            "skill": skill_result,
+            "compose": result,
+            "readiness": readiness,
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 1
     state = {
         "release": new_manifest.get("release"),
         "previous_release": old_state.get("release"),
@@ -584,12 +748,20 @@ def apply_upgrade(args: argparse.Namespace) -> int:
         "backup": skill_result["backup"],
         "gpu": bool(args.gpu),
         "cpu": bool(args.cpu),
+        "release_root": str(new_release),
+        "previous_root": old_state.get("release_root", str(ROOT)),
         "upgraded_at": datetime.now(UTC).isoformat(),
     }
     save_state(state)
-    payload = {"mode": "upgrade", "applied": True, "skill": skill_result, "compose": result}
+    payload = {
+        "mode": "upgrade",
+        "applied": True,
+        "skill": skill_result,
+        "compose": result,
+        "readiness": readiness,
+    }
     print(json.dumps(payload, indent=2, sort_keys=True))
-    return 0 if result.get("returncode") == 0 else 1
+    return 0
 
 
 def apply_rollback(args: argparse.Namespace) -> int:
@@ -598,40 +770,86 @@ def apply_rollback(args: argparse.Namespace) -> int:
     state = load_release_state()
     backup = Path(args.backup).expanduser().resolve() if args.backup else None
     if backup is None and state.get("backup"):
-        backup = Path(state["backup"])
+        backup = Path(state["backup"]).resolve()
     if backup is None or not backup.is_dir():
         raise SystemExit("no retained skill backup found")
+    try:
+        backup.relative_to(BACKUPS.resolve())
+    except ValueError:
+        raise SystemExit("rollback backup must be under deploy/backups") from None
+    previous_release = state.get("previous_release")
+    if not previous_release:
+        raise SystemExit("no previous release is recorded")
+    previous_root = Path(state.get("previous_root", str(ROOT))).expanduser()
+    if not (previous_root / "deploy" / "compose.yaml").is_file():
+        raise SystemExit(f"previous release root is not available: {previous_root}")
     restored = restore_skill(workspace, backup)
-    previous_release = state.get("previous_release") or state.get("release")
     result = run(
-        compose_command(args, "up", "-d", "--no-build"),
+        compose_command(args, "up", "-d", "--no-build", root=previous_root),
         timeout=300,
         env_overrides=release_env(previous_release),
     )
-    state["release"] = previous_release
-    state["rolled_back_at"] = datetime.now(UTC).isoformat()
-    state["backup"] = str(backup)
-    save_state(state)
+    readiness = (
+        wait_container_ready(args, root=previous_root)
+        if result.get("returncode") == 0
+        else {"ready": False, "reason": "compose_failed"}
+    )
+    if result.get("returncode") == 0 and readiness.get("ready"):
+        state["release"] = previous_release
+        state["previous_release"] = None
+        state["rolled_back_at"] = datetime.now(UTC).isoformat()
+        state["backup"] = str(backup)
+        save_state(state)
     payload = {
         "mode": "rollback",
-        "applied": result.get("returncode") == 0,
+        "applied": bool(result.get("returncode") == 0 and readiness.get("ready")),
         "skill": restored,
         "release": previous_release,
         "compose": result,
+        "readiness": readiness,
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
-    return 0 if result.get("returncode") == 0 else 1
+    return 0 if payload["applied"] else 1
 
 
 def apply_uninstall(args: argparse.Namespace) -> int:
     require_apply(args)
     command = compose_command(args, "down")
-    if args.delete_data:
-        if args.confirm_delete_data != "clawvoice-data":
-            raise SystemExit("--delete-data requires --confirm-delete-data clawvoice-data")
-        command.append("-v")
+    volume_name = "openclaw-chatterbox_clawvoice-data"
+    if args.delete_data and args.confirm_delete_data != volume_name:
+        raise SystemExit(
+            f"--delete-data requires --confirm-delete-data {volume_name}; "
+            "only that project data volume is removed"
+        )
     result = run(command, timeout=300)
-    workspace = Path(args.openclaw_workspace).expanduser().resolve() if args.openclaw_workspace else None
+    if result.get("returncode") != 0:
+        print(
+            json.dumps(
+                {"mode": "uninstall", "applied": False, "compose": result},
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 1
+    volume_result = None
+    if args.delete_data:
+        docker = which("docker")
+        volume_result = run([docker, "volume", "rm", volume_name], timeout=60) if docker else {"returncode": 127}
+        if volume_result.get("returncode") != 0:
+            print(
+                json.dumps(
+                    {
+                        "mode": "uninstall",
+                        "applied": False,
+                        "compose": result,
+                        "volume": volume_result,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 1
+    workspace = require_workspace(args) if args.openclaw_workspace else None
     target = skill_target(workspace) if workspace else None
     removed_skill = False
     if target and target.exists():
@@ -643,8 +861,9 @@ def apply_uninstall(args: argparse.Namespace) -> int:
         json.dumps(
             {
                 "mode": "uninstall",
-                "applied": result.get("returncode") == 0,
+                "applied": True,
                 "compose": result,
+                "volume": volume_result,
                 "skill_removed": removed_skill,
                 "data_retained": not args.delete_data,
                 "backup_root": str(BACKUPS),
@@ -653,7 +872,7 @@ def apply_uninstall(args: argparse.Namespace) -> int:
             sort_keys=True,
         )
     )
-    return 0 if result.get("returncode") == 0 else 1
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -666,6 +885,8 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--openclaw-workspace")
         p.add_argument("--agent", default="main")
         p.add_argument("--env-file")
+        p.add_argument("--model-dir")
+        p.add_argument("--allow-unverified-target", action="store_true")
         gpu_group = p.add_mutually_exclusive_group()
         gpu_group.add_argument("--gpu", action="store_true")
         gpu_group.add_argument("--cpu", action="store_true")

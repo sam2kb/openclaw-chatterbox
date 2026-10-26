@@ -12,6 +12,7 @@ Do not mount model/data on NFS or SMB.
 
 ```sh
 mkdir -p models
+chmod 755 models
 cp config/clawvoice.env.example config/clawvoice.env
 chmod 600 config/clawvoice.env
 # Edit the private env file. Never commit it.
@@ -20,8 +21,12 @@ chmod 600 config/clawvoice.env
 docker compose --env-file config/clawvoice.env -f deploy/compose.yaml build
 
 # Provision the pinned model explicitly. This does not run on every request.
+# The provision service uses a throwaway /tmp data tree, not the runtime volume,
+# so it cannot leave root-owned dirs where UID 10001 must write.
 docker compose --env-file config/clawvoice.env -f deploy/compose.yaml \
   --profile tools run --rm provision
+# The fetch normalizes model file modes; the parent models/ dir must be
+# traversable by UID 10001.
 
 # GPU target: add the GPU override after the model and image exist.
 docker compose --env-file config/clawvoice.env \
@@ -45,6 +50,8 @@ Copy the generated service token into the operator's protected flow before using
 the host CLI or OpenClaw skill:
 
 ```sh
+mkdir -p ./secrets
+chmod 700 ./secrets
 docker compose --env-file config/clawvoice.env -f deploy/compose.yaml \
   cp api:/data/secrets/service-token ./secrets/clawvoice-service-token
 chmod 600 ./secrets/clawvoice-service-token
@@ -85,6 +92,7 @@ provision the model. The base client deliberately has no Torch dependency.
 | `CLAWVOICE_ALLOWED_ORIGINS` | comma-separated exact origins | base URL origin |
 | `CLAWVOICE_MAX_QUEUE_DEPTH` | bounded queued/running jobs | 32 |
 | `CLAWVOICE_ARTIFACT_RETENTION_DAYS` | generated audio retention | 7 |
+| `CLAWVOICE_CLEANUP_INTERVAL_SECONDS` | background cleanup interval; 0 disables the loop | 3600 |
 
 The fake backend is refused unless `CLAWVOICE_ALLOW_FAKE=1`; it is never a
 production default.

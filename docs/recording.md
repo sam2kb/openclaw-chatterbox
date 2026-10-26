@@ -41,8 +41,11 @@
 
 Content is detected by FFprobe; extensions and client MIME types are not
 trusted. WAV, MP3, WebM/Opus, and MP4/AAC browser outputs are supported when the
-installed FFmpeg decoder supports them. Unsupported or malformed files return a
-useful `audio_decode_failed` error without exposing decoder internals.
+installed FFmpeg decoder supports them. The service permits a small allowlist of
+common audio containers and passes `-protocol_whitelist file` to FFprobe/FFmpeg,
+so a playlist/container cannot turn uploads into arbitrary network fetches.
+Unsupported or malformed files return a useful `audio_decode_failed` error
+without exposing decoder internals.
 
 Limits are configured in `Settings`: upload bytes, decoded source duration,
 decoder timeout, normalized reference duration, and total private storage.
@@ -58,8 +61,9 @@ clawvoice voices revise <voice-id> --audio ./new-sample.wav --authorized
 
 The old original/normalized files remain as version rows until the voice is
 explicitly deleted. The new version starts an audition job and becomes current
-only after the normalization succeeds. The recording still does not fine-tune
-weights.
+only after the normalization succeeds. Jobs already queued snapshot their
+reference-version ID and continue with the clip they were submitted against.
+The recording still does not fine-tune weights.
 
 ## Microphone secure context
 

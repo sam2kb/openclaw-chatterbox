@@ -135,6 +135,11 @@ def split_text(text: str, target_chars: int, *, max_chunks: int) -> list[str]:
     tokens = [m.group(0) for m in _TOKEN.finditer(text)]
     if not tokens:
         raise ValidationFailure("text cannot be empty")
+    leading = text[: len(text) - len(text.lstrip())]
+    if leading:
+        # Preserve caller-supplied leading whitespace rather than allowing the
+        # exact-reassembly assertion to turn it into a 500.
+        tokens[0] = leading + tokens[0]
     if any(len(token) > target_chars for token in tokens):
         raise ValidationFailure(
             "a single word/token is too long for the synthesis chunk limit",

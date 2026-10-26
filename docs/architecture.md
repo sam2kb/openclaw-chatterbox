@@ -39,7 +39,7 @@ files live under:
 ```text
 data/voices/<voice-id>/reference/<ref-id>/original.<ext>
 data/voices/<voice-id>/reference/<ref-id>/reference.wav
-data/artifacts/<job-id>/<artifact-id>.<ext>
+data/artifacts/<job-id>/<attempt-id>/<artifact-id>.<ext>
 data/enrollment/<session-id>/<upload-id>/original.<ext>
 data/tmp/
 data/state/compatibility.json   # explicit real-model smoke record
@@ -47,9 +47,12 @@ data/secrets/service-token      # mode 0600
 ```
 
 Artifact rows are written only after an atomically replaced file exists. Job
-success and its artifact rows commit in one transaction. A crash can leave an
-unreferenced file, cleaned by `clawvoice cleanup`; it cannot expose a partial
-successful artifact because downloads require an artifact row and an opaque ID.
+success and its artifact rows commit in one transaction. Each attempt has its
+own directory, so a stale worker cannot delete a newer attempt's files. A crash
+can leave an unreferenced file; the background cleanup (and `clawvoice cleanup`)
+removes old unreferenced files and empty directories after a grace period. It
+cannot expose a partial successful artifact because downloads require an
+artifact row and an opaque ID.
 
 ## Job state machine
 

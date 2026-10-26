@@ -96,15 +96,16 @@ services:
       target: worker
     command: ["clawvoice", "models", "fetch", "--backend", "turbo", "--revision", "749d1c1a46eb10492095d68fbcf55691ccf137cd"]
     environment:
-      CLAWVOICE_DATA_DIR: /data
+      # Use a throwaway root-only data tree: the named runtime volume must be
+      # initialized/owned by the API's UID 10001, never by this root tool.
+      CLAWVOICE_DATA_DIR: /tmp/clawvoice-provision
       CLAWVOICE_MODEL_DIR: /models/chatterbox-turbo
       CLAWVOICE_BACKEND: turbo
       CLAWVOICE_DEVICE: cpu
-      CLAWVOICE_TOKEN_FILE: /data/secrets/service-token
+      CLAWVOICE_TOKEN_FILE: /tmp/clawvoice-provision/secrets/service-token
       HF_TOKEN: ${HF_TOKEN:-}
-      HF_HOME: /data/hf-cache
+      HF_HOME: /tmp/clawvoice-provision/hf-cache
     volumes:
-      - clawvoice-data:/data
       - ${CLAWVOICE_MODELS_DIR:-../models}:/models
     logging: *logging
 

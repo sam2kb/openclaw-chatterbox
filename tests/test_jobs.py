@@ -82,7 +82,8 @@ def test_running_cancel_is_pending_then_canceled(settings, headers, reference):
             final = wait_job(client, headers, job_id, timeout=10)
             assert final["status"] == "canceled"
             assert final["artifacts"] == []
-            assert not (settings.artifacts_dir / job_id).exists()
+            job_dir = settings.artifacts_dir / job_id
+            assert not job_dir.exists() or not any(job_dir.rglob("*"))
         finally:
             backend.release.set()
             worker.stop(timeout=10)
@@ -191,3 +192,43 @@ def test_profile_conditioning_alternates_under_overlapping_requests(settings, he
         assert app.state.worker.backend.max_active == 1
         # Each job records exactly one rendered profile and no cross-profile leak.
         assert len({job["artifacts"][0]["sha256"] for job in jobs}) == 6
+
+
+def test_claim_requires_current_worker_lease(settings, headers, reference):
+    app = create_app(settings, start_worker=False)
+    store = app.state.store
+    with TestClient(app) as client:
+        create_direct_voice(client, headers, reference)
+        assert store.try_acquire_worker_lock(owner="wrk_a", lease_seconds=30) is True
+        with store.db.transaction(immediate=True) as conn:
+            conn.execute(
+                "UPDATE worker_lock SET owner='wrk_b', lease_expires_at=? WHERE id=1",
+                (time.time() * 1000 + 30_000,),
+            )
+        assert store.claim_job(worker_id="wrk_a", lease_seconds=30) is None
+
+
+def test_recovered_job_clears_stale_error_on_success(settings, headers, reference):
+    from tests.helpers import wait_job, wait_ready
+
+    app = create_app(settings, start_worker=False)
+    store = app.state.store
+    with TestClient(app) as client:
+        result = create_direct_voice(client, headers, reference)
+        job_id = result["audition_job"]["id"]
+        with store.db.transaction(immediate=True) as conn:
+            conn.execute(
+                "UPDATE jobs SET status='running', worker_id='wrk_dead', attempts=1, "
+                "lease_expires_at=? WHERE id=?",
+                (1, job_id),
+            )
+        store.recover_stale_jobs(lease_seconds=30)
+        worker = InferenceWorker(settings, store, app.state.audio)
+        worker.start_thread()
+        try:
+            wait_ready(client, headers, timeout=15)
+            job = wait_job(client, headers, job_id, timeout=20)
+            assert job["status"] == "succeeded"
+            assert job["error"] is None
+        finally:
+            worker.stop(timeout=10)

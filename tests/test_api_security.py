@@ -21,6 +21,14 @@ def test_liveness_is_public_but_other_routes_require_auth(client, headers):
         assert response.status_code == 401, (path, response.text)
     wrong = client.get("/api/v1/voices", headers={"Authorization": "Bearer " + "x" * 40})
     assert wrong.status_code == 401
+    assert client.get("/api/v1/openapi.json").status_code == 401
+    unicode_token = client.get(
+        "/api/v1/voices", headers={"Authorization": b"Bearer caf\xe9" * 8}
+    )
+    assert unicode_token.status_code == 401
+    schema = client.get("/api/v1/openapi.json", headers=headers)
+    assert schema.status_code == 200
+    assert "/api/v1/synthesis-jobs" in schema.json()["paths"]
 
 
 def test_enrollment_token_is_scoped_and_single_use(client, headers, reference):
@@ -162,3 +170,65 @@ def test_wildcard_cors_is_not_configured(client, headers):
         },
     )
     assert response.headers.get("access-control-allow-origin") is None
+
+
+def test_expired_enrollment_cleanup_removes_staged_recording(client, headers, reference, settings):
+    from tests.helpers import create_enrollment
+
+    session = create_enrollment(client, headers, "abandoned")
+    token = session["recorder_url"].split("#token=", 1)[1]
+    scoped = {"Authorization": f"Bearer {token}"}
+    upload = client.post(
+        f"/api/v1/enrollment-sessions/{session['id']}/uploads",
+        headers=scoped,
+        content=reference.read_bytes(),
+    )
+    assert upload.status_code == 201, upload.text
+    store = client.app.state.store
+    row = store.get_enrollment_upload(session["id"], upload.json()["id"])
+    path = client.app.state.storage.resolve(row["original_path"])
+    assert path.is_file()
+    with store.db.transaction(immediate=True) as conn:
+        conn.execute("UPDATE enrollment_sessions SET expires_at=? WHERE id=?", (0, session["id"]))
+    removed = client.app.state.storage.cleanup_expired_enrollments()
+    assert removed == 1
+    assert not path.exists()
+    with store.db.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM enrollment_sessions WHERE id=?", (session["id"],)
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM enrollment_uploads WHERE session_id=?", (session["id"],)
+        ).fetchone()[0] == 0
+
+
+def test_json_without_content_length_is_rejected_before_buffering():
+    import asyncio
+
+    from clawvoice.api import _MaxBodySizeJSON
+
+    calls = []
+
+    async def app(scope, receive, send):
+        calls.append("called")
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    middleware = _MaxBodySizeJSON(app, limit=100, upload_limit=1000)
+    sent = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"x" * 500, "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    asyncio.run(
+        middleware(
+            {"type": "http", "method": "POST", "path": "/api/v1/synthesis-jobs", "headers": []},
+            receive,
+            send,
+        )
+    )
+    assert calls == []
+    assert sent and sent[0]["status"] == 411

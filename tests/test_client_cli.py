@@ -53,6 +53,23 @@ def test_token_file_permissions_are_enforced(tmp_path):
         load_service_token(token)
 
 
+def test_models_verify_is_read_only(tmp_path):
+    data_dir = tmp_path / "data-should-not-exist"
+    env = os.environ.copy()
+    env.update(
+        {
+            "CLAWVOICE_DATA_DIR": str(data_dir),
+            "CLAWVOICE_TOKEN_FILE": str(data_dir / "secrets" / "token"),
+            "TMPDIR": str(tmp_path / "tmp"),
+        }
+    )
+    proc = run_cli(
+        ["models", "verify", "--dir", str(tmp_path / "missing-model"), "--json"], env
+    )
+    assert proc.returncode == 4
+    assert not data_dir.exists()
+
+
 def test_cli_end_to_end_without_torch(tmp_path):
     port = free_port()
     data_dir = tmp_path / "service"

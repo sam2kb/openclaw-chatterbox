@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import time
 from pathlib import Path
@@ -151,6 +152,10 @@ def fetch_model(
         revision=TURBO_REVISION,
         local_dir=str(model_dir),
         allow_patterns=["*.safetensors", "*.json", "*.txt", "*.yaml", "*.pt", "*.model"],
+        # The Turbo loader uses s3gen_meanflow.safetensors. The repository also
+        # carries an unused s3gen.safetensors (>1 GB); do not fetch it.
+        ignore_patterns=["s3gen.safetensors"],
+        force_download=force,
     )
     result = verify_model(model_dir, backend=backend, deep=True, require_marker=False)
     if not result["ok"]:
@@ -159,5 +164,18 @@ def fetch_model(
             details={"problems": result["problems"][:12]},
         )
     write_marker(model_dir, backend=backend)
+    # The runtime worker is UID 10001 and the model mount is read-only. Make
+    # the fetched tree readable/traversable without changing operator files
+    # outside this directory.
+    for base, _dirs, files in os.walk(model_dir):
+        try:
+            Path(base).chmod(0o755)
+        except OSError:
+            pass
+        for name in files:
+            try:
+                (Path(base) / name).chmod(0o644)
+            except OSError:
+                pass
     result = verify_model(model_dir, backend=backend, deep=False)
     return result

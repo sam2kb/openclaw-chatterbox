@@ -61,7 +61,8 @@ Accept the GPU path only if all are true:
 - `doctor.torch.allocation_math.passed` is true on the GTX 1070 Ti.
 - `doctor.torch.capability` is `6.1`, and the compiled arch list includes the
   device's architecture or a compatible one.
-- `models smoke` produces non-empty audio and a finite, measured duration.
+- Worker startup performs a deep SHA-256 verification of the pinned model files,
+  and `models smoke` produces non-empty audio and a finite, measured duration.
 - Peak VRAM, process RAM, cold load time, warm render latency, generated
   duration, and real-time factor are recorded from the actual run. Do not
   promise a footprint before measuring.
@@ -78,7 +79,9 @@ release candidate, not a target-supported deployment.
 - FP16 is not enabled. Evaluate it only if the chosen backend supports it and
   measurements justify audio/latency/memory tradeoffs.
 - No silent CPU fallback. If CUDA is unavailable, allocation/math fails, or the
-  model OOMs, the worker reports failure and readiness becomes not-ready.
+  model OOMs, the worker reports failure and readiness becomes not-ready until
+  the worker reloads/probes successfully. Other CUDA faults should be treated as
+  a degraded worker if observed in acceptance.
 - CPU mode is available through the Compose CPU override for evaluation, but it
   is not performance-verified. Nano is not shipped in this release.
 - Exposed controls are only those the pinned Turbo implementation supports:

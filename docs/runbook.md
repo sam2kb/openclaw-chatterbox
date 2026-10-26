@@ -13,23 +13,26 @@ deploy/clawbox plan --openclaw-workspace /path/to/agent/workspace
 
 The plan reports prerequisites, disk, port, image identities, model state,
 volume ownership, detected OpenClaw version, and the exact commands it would
-run. It must not fetch weights, build images, start containers, restart
-OpenClaw, register the skill, or write config.
+run. It does not fetch weights, build images, start containers, restart
+OpenClaw, register the skill, or write config. `models verify` is run in a
+read-only mode.
 
 ## Install (authorized window)
 
 ```sh
-deploy/clawbox install --apply \
+deploy/clawbox install --apply --gpu --allow-unverified-target \
   --openclaw-workspace /path/to/main-agent-workspace
 ```
 
-Before the change, verify: service image digests match the release manifest;
-the model marker matches the pinned revision; the target GPU gate passed; the
-OpenClaw version/policy inventory is recorded; the backup location is
-owner-only. The installer stages and validates skill files, backs up any
-existing `chatterbox-voice` skill, preserves unrelated files and agents, and
-starts only the API/worker. It does not fetch model weights or change NVIDIA
-drivers/CUDA.
+Before the change, verify: the image tags and any recorded local image IDs match
+the release manifest; the model marker matches the pinned revision; the target
+GPU gate passed (or you explicitly pass `--allow-unverified-target` for a
+candidate); the OpenClaw version/policy inventory is recorded; the backup
+location is owner-only. The installer starts Compose, waits for authenticated
+readiness, then stages and validates skill files; it backs up any existing
+`chatterbox-voice` skill and preserves unrelated files and agents. It does not
+fetch model weights or change NVIDIA drivers/CUDA. A failed readiness check
+leaves the previous skill untouched.
 
 If the target agent is sandboxed, stop: the installer's host skill copy is not
 enough. Complete the sandbox plan in `openclaw-integration.md` and test from the
@@ -51,14 +54,17 @@ and the skill is discoverable for the intended agent. Then run the canary from
 ## Upgrade
 
 ```sh
-deploy/clawbox upgrade --apply --release /path/to/new-release
+deploy/clawbox upgrade --apply --gpu --allow-unverified-target \
+  --release /path/to/new-release
 ```
 
-Use only a new signed/manifested release. The upgrade must not silently upgrade
-the NVIDIA driver, CUDA compatibility, Python/Torch pins, or model revision.
-It backs up the current skill and release pointer, stages the new files, and
-keeps a rollback pointer. If model revision changes, it requires a separate
-compatibility gate and explicit approval.
+Use only a release bundle whose `SHA256SUMS` you verified. The installer checks
+the manifest's model identity and image tags/recorded local IDs, but this project
+does not implement package signatures. The upgrade must not silently upgrade the
+NVIDIA driver, CUDA compatibility, Python/Torch pins, or model revision. It
+backs up the current skill, stages the new skill, and restores it if Compose or
+readiness fails; it records the new release only after readiness succeeds. If
+the model revision changes, it requires a separate compatibility gate.
 
 ## Rollback
 
@@ -66,9 +72,10 @@ compatibility gate and explicit approval.
 deploy/clawbox rollback --apply --backup <id> --json
 ```
 
-Restores the previous skill and release pointer, recreates/repoints containers
-to the previous image tags, and leaves the data volume untouched. Model files
-and driver state are not changed.
+Restores the previous skill from a backup under `deploy/backups`, points
+Compose at the recorded previous release tag, and leaves the data volume
+untouched. It records the rollback only after readiness succeeds. Model files
+and driver state are not changed. Backups outside `deploy/backups` are refused.
 
 ## Uninstall
 
@@ -78,8 +85,16 @@ deploy/clawbox uninstall --apply
 
 Stops and removes containers and the skill installed by this project. The data
 volume and generated audio are retained by default. `--delete-data` is a
-separate, explicit destructive operation that must name the volume and confirm
-interactively; it is never implied by uninstall.
+separate destructive operation and must be paired with the actual Compose
+volume name:
+
+```sh
+deploy/clawbox uninstall --apply --delete-data \
+  --confirm-delete-data openclaw-chatterbox_clawvoice-data
+```
+
+The tool removes only that named volume after teardown; it does not use
+`compose down -v`, and it removes the skill only after teardown succeeds.
 
 ## Backups
 

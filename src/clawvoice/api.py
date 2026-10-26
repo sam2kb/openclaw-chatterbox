@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -23,6 +24,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.cors import CORSMiddleware
 
@@ -82,6 +84,13 @@ _EXTENSIONS = {
     "flac": "flac",
     "aac": "aac",
 }
+
+
+def _constant_time_equal(left: str, right: str) -> bool:
+    try:
+        return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
+    except (UnicodeEncodeError, TypeError):
+        return False
 
 
 def _safe_name(value: str) -> str:
@@ -185,9 +194,9 @@ async def _read_body_to_temp(
                 "upload exceeds the configured byte limit",
                 details={"max_bytes": settings.max_upload_bytes},
             )
-        storage.ensure_capacity(declared)
+        await run_in_threadpool(storage.ensure_capacity, declared)
     else:
-        storage.ensure_capacity(0)
+        await run_in_threadpool(storage.ensure_capacity, 0)
     fd, tmp_name = tempfile.mkstemp(prefix="upload-", dir=settings.tmp_dir)
     path = Path(tmp_name)
     received = 0
@@ -209,7 +218,7 @@ async def _read_body_to_temp(
             os.fsync(fh.fileno())
         if received == 0:
             raise ValidationFailure("the uploaded audio file is empty")
-        storage.ensure_capacity(received)
+        await run_in_threadpool(storage.ensure_capacity, received)
         os.chmod(path, 0o600)
         return path, received, digest.hexdigest()
     except BaseException:
@@ -434,16 +443,21 @@ class _MaxBodySizeJSON:
             await self.app(scope, receive, send)
             return
         path = scope.get("path", "")
+        normalized_path = path.rstrip("/") or "/"
         is_upload = (
-            path.endswith("/uploads")
-            or path.endswith("/reference")
-            or path == "/api/v1/voices"
+            normalized_path.endswith("/uploads")
+            or normalized_path.endswith("/reference")
+            or normalized_path == "/api/v1/voices"
         )
         limit = self.upload_limit if is_upload else self.limit
         headers = dict(scope.get("headers") or [])
         length = headers.get(b"content-length")
-        content_type = (headers.get(b"content-type") or b"").lower()
-        if not is_upload and content_type.startswith(b"application/json") and not length:
+        bodyless = (
+            normalized_path.endswith("/select")
+            or normalized_path.endswith("/preview")
+            or normalized_path.endswith("/cancel")
+        )
+        if not is_upload and not bodyless and not length:
             await JSONResponse(
                 status_code=411,
                 content={
@@ -494,7 +508,6 @@ def create_app(
     store = Store(db)
     audio = AudioProcessor(settings)
     storage = StorageManager(settings, store)
-    storage.cleanup_temp(older_than_seconds=0)
     bearer = HTTPBearer(auto_error=False, scheme_name="ClawvoiceBearer")
 
     worker_instance = worker
@@ -507,11 +520,39 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        async def cleanup_loop() -> None:
+            while True:
+                await asyncio.sleep(settings.cleanup_interval_seconds)
+                try:
+                    await asyncio.to_thread(storage.cleanup_expired_artifacts)
+                    await asyncio.to_thread(storage.cleanup_expired_enrollments)
+                    await asyncio.to_thread(storage.cleanup_temp)
+                    await asyncio.to_thread(storage.cleanup_orphans)
+                    await asyncio.to_thread(db.checkpoint)
+                except Exception:
+                    logger.exception("periodic storage cleanup failed")
+
+        cleanup_task: asyncio.Task | None = None
+        try:
+            storage.cleanup_expired_artifacts()
+            storage.cleanup_expired_enrollments()
+            storage.cleanup_temp()
+            db.checkpoint()
+        except Exception:
+            logger.exception("startup storage cleanup failed")
+        if settings.cleanup_interval_seconds > 0:
+            cleanup_task = asyncio.create_task(cleanup_loop(), name="clawvoice-cleanup")
         if start_worker and worker_instance is not None:
             worker_instance.start_thread()
         try:
             yield
         finally:
+            if cleanup_task is not None:
+                cleanup_task.cancel()
+                try:
+                    await cleanup_task
+                except asyncio.CancelledError:
+                    pass
             if worker_instance is not None:
                 worker_instance.stop(timeout=10.0)
 
@@ -521,7 +562,7 @@ def create_app(
         description="Local reference-conditioned voice service. All voice/audio routes require a bearer token.",
         docs_url=None,
         redoc_url=None,
-        openapi_url="/api/v1/openapi.json",
+        openapi_url=None,
         lifespan=lifespan,
     )
     app.state.settings = settings
@@ -635,7 +676,7 @@ def create_app(
         credentials: HTTPAuthorizationCredentials | None = Security(bearer),
     ) -> None:
         token = _bearer_token(credentials)
-        if not hmac.compare_digest(token, settings.service_token):
+        if not _constant_time_equal(token, settings.service_token):
             raise AuthenticationError("invalid service credential")
 
     def require_enrollment(
@@ -735,6 +776,14 @@ def create_app(
             status, reason = "not_ready", "ffmpeg_missing"
         body = {"status": status, "reason": reason, "checks": checks}
         return JSONResponse(body, status_code=200 if status == "ready" else 503)
+
+    @app.get(
+        "/api/v1/openapi.json",
+        include_in_schema=False,
+        dependencies=[Depends(require_service)],
+    )
+    def openapi_schema() -> JSONResponse:
+        return JSONResponse(app.openapi())
 
     @app.get(
         "/api/v1/capabilities",
@@ -866,8 +915,8 @@ def create_app(
             request, settings=settings, storage=storage
         )
         try:
-            probe = audio.probe(staged)
-            _, checks = audio.inspect(staged, probe)
+            probe = await run_in_threadpool(audio.probe, staged)
+            _, checks = await run_in_threadpool(audio.inspect, staged, probe)
             upload_id = new_id("upl")
             upload_dir = settings.enrollment_dir / session_id / upload_id
             ensure_private_dir(upload_dir)
@@ -1010,7 +1059,8 @@ def create_app(
             request, settings=settings, storage=storage
         )
         try:
-            voice, job = _normalize_staged_voice(
+            voice, job = await run_in_threadpool(
+                _normalize_staged_voice,
                 settings=settings,
                 audio=audio,
                 staged=staged,
@@ -1051,7 +1101,8 @@ def create_app(
             request, settings=settings, storage=storage
         )
         try:
-            voice, job = _revise_voice_reference(
+            voice, job = await run_in_threadpool(
+                _revise_voice_reference,
                 settings=settings,
                 audio=audio,
                 staged=staged,
@@ -1097,6 +1148,7 @@ def create_app(
             storage.remove_relative(path)
         shutil.rmtree(settings.voices_dir / voice_id, ignore_errors=True)
         storage.cleanup_empty_dirs()
+        db.checkpoint()
         return {"deleted": True, "id": voice_id, "files_removed": len(paths)}
 
     @app.post(
@@ -1142,6 +1194,7 @@ def create_app(
                 "the selected voice is not compatible with this service backend",
                 details={"voice_backend": voice["backend"], "service_backend": settings.backend},
             )
+        storage.ensure_capacity(0)
         payload = body.input_payload()
         try:
             plan = build_plan(
@@ -1150,7 +1203,7 @@ def create_app(
                 controls=body.controls_payload(),
                 seed=body.seed,
             )
-        except ValueError as exc:
+        except (ValueError, AssertionError) as exc:
             raise ValidationFailure("invalid synthesis input") from exc
         job = store.create_synthesis_job(
             voice_id=voice_id,

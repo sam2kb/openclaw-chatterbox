@@ -5,7 +5,9 @@ Read this only when the agent runs in a sandbox or container.
 A skill that passes readiness on the host may still be unusable in a sandbox:
 
 - The `clawvoice` binary must be installed **inside** the sandbox image (or
-  reachable by its `exec` environment), not just on the host.
+  reachable by its `exec` environment), not just on the host. `doctor`'s local
+  `model.ok`/`torch` fields may be false there; use the remote
+  `service.ready.checks.worker.real_model` signal instead.
 - Skill `env`/`apiKey` injection is host-run only; it does not reach a sandbox.
   Provide the URL and token file through the sandbox's documented environment or
   a read-only mounted secret. Do not put the service token in a skill file.

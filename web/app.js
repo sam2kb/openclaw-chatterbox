@@ -18,6 +18,7 @@
     startedAt: 0,
     pollTimer: null,
     completed: false,
+    disposed: false,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -118,7 +119,12 @@
   function consumeFragment() {
     const hash = window.location.hash || "";
     if (!hash.startsWith("#token=")) return null;
-    const token = decodeURIComponent(hash.slice("#token=".length));
+    let token;
+    try {
+      token = decodeURIComponent(hash.slice("#token=".length));
+    } catch (_) {
+      return null;
+    }
     try {
       history.replaceState(null, "", window.location.pathname + window.location.search);
     } catch (_) {
@@ -224,6 +230,12 @@
           autoGainControl: false,
         },
       });
+      if (state.disposed) {
+        for (const track of stream.getTracks()) {
+          try { track.stop(); } catch (_) { /* already stopped */ }
+        }
+        return;
+      }
       state.stream = stream;
       state.chunks = [];
       state.recording = true;
@@ -640,8 +652,17 @@
       setStatus(ui.auditionStatus, `Voice ID: ${id}`, "");
     }
   });
-  window.addEventListener("pagehide", stopRecordingIfAny);
-  window.addEventListener("beforeunload", stopRecordingIfAny);
+  window.addEventListener("pagehide", () => {
+    state.disposed = true;
+    stopRecordingIfAny();
+  });
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) state.disposed = false;
+  });
+  window.addEventListener("beforeunload", () => {
+    state.disposed = true;
+    stopRecordingIfAny();
+  });
 
   init();
 })();

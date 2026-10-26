@@ -172,7 +172,10 @@ def command_doctor(args: argparse.Namespace) -> int:
 def command_models(args: argparse.Namespace) -> int:
     from .modelprovision import fetch_model, verify_model
 
-    settings = _settings(create_dirs=True, require_token=False)
+    settings = _settings(
+        create_dirs=args.models_command in ("fetch", "smoke"),
+        require_token=False,
+    )
     if args.models_command == "fetch":
         result = fetch_model(
             settings.model_dir,
@@ -437,13 +440,23 @@ def command_cleanup(args: argparse.Namespace) -> int:
     store = Store(db)
     storage = StorageManager(settings, store)
     expired = storage.cleanup_expired_artifacts()
+    enrollments = storage.cleanup_expired_enrollments()
     temp = storage.cleanup_temp()
+    orphans = storage.cleanup_orphans()
     empty = storage.cleanup_empty_dirs()
-    result = {"expired_artifacts": expired, "temp_files": temp, "empty_directories": empty}
+    db.checkpoint()
+    result = {
+        "expired_artifacts": expired,
+        "expired_enrollments": enrollments,
+        "temp_files": temp,
+        "orphans": orphans,
+        "empty_directories": empty,
+    }
     _emit(
         result,
         args,
-        f"Removed {expired} expired artifact(s), {temp} temp file(s), and {empty} empty directory/directories.",
+        f"Removed {expired} expired artifact(s), {enrollments} expired enrollment(s), "
+        f"{temp} temp file(s), {orphans} orphan(s), and {empty} empty directory/directories.",
     )
     return EXIT_OK
 
