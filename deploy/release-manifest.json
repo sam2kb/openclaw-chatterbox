@@ -3,7 +3,7 @@
     "python": "python:3.11.16-slim-bookworm@sha256:4b4c524dc3dce996864e030c7bd9c6b0e517597189fee48f48e05b499442444b",
     "uv": "ghcr.io/astral-sh/uv:0.12.17@sha256:1194b357d63b7bea6c121d8eef5d08d29c26ffbcfc64ec5ebcefd642ea759edb"
   },
-  "created_at": "2026-10-26T02:59:11Z",
+  "created_at": "2026-10-26T05:23:51.684479+00:00",
   "data": {
     "generated_audio_in_bundle": false,
     "recordings_in_bundle": false,
@@ -13,17 +13,17 @@
   "images": {
     "api": {
       "built": true,
-      "local_image_id": "sha256:7e51a4939c0d648f57087ab59665b42cea17986f8833c877a7fb29dbc7880793",
+      "local_image_id": "sha256:9e8f1e082093405cc7e5326ea638e162b78add202cda5b9080ef7619573dccd6",
       "smoke_tested": true,
-      "tag": "openclaw-chatterbox-api:0.1.0",
-      "target_verified": false
+      "tag": "openclaw-chatterbox-api:0.1.1",
+      "target_verified": true
     },
     "worker": {
-      "built": false,
-      "local_image_id": null,
-      "note": "Worker image build was attempted in this development session but did not complete (large cu124/NVIDIA downloads); the target GPU worker image must be built and verified on the authorized host.",
-      "tag": "openclaw-chatterbox-worker:0.1.0",
-      "target_verified": false
+      "built": true,
+      "local_image_id": "sha256:e34dc37cc6d320d2fed886ae56a702515fcfb0cb8640d0dc974fb9d3abb60884",
+      "smoke_tested": true,
+      "tag": "openclaw-chatterbox-worker:0.1.1",
+      "target_verified": true
     }
   },
   "license": {
@@ -33,7 +33,7 @@
     "project": "Apache-2.0"
   },
   "project": "openclaw-chatterbox",
-  "release": "0.1.0",
+  "release": "0.1.1",
   "runtime": {
     "index": "https://download.pytorch.org/whl/cu124",
     "python": "3.11",
@@ -51,15 +51,13 @@
   },
   "status": "release-candidate",
   "unverified_gates": [
-    "CUDA allocation/math and complete synthesis on GTX 1070 Ti / Pascal 6.1",
-    "peak VRAM, process memory, cold/warm latency, real-time factor",
-    "two-profile A/B/A listening and speaker-similarity review",
+    "owner listening and two-profile speaker-similarity review",
     "telephony consumer playback and carrier compatibility",
-    "live OpenClaw version/policy integration and channel attachment",
-    "authorized Clawbox install/upgrade/rollback"
+    "owner messaging-channel audio attachment delivery",
+    "live cross-version upgrade/rollback (same-version bundle lifecycle verified)"
   ],
   "wheel": {
-    "filename": "clawvoice-0.1.0-py3-none-any.whl",
-    "sha256": "7e18bfab9ae051675e264b001f944590194bd36a8b655e7d34fbefb7dc6d4675"
+    "filename": "clawvoice-0.1.1-py3-none-any.whl",
+    "sha256": "824b9344981b1d9f264ffe3093a8dd14548aaa2c10d3281bed5cd3893c43ca02"
   }
 }

@@ -113,7 +113,9 @@ class InferenceWorker:
     def start_thread(self) -> None:
         if self._thread and self._thread.is_alive():
             return
-        self._thread = threading.Thread(target=self.run_forever, name="clawvoice-worker", daemon=True)
+        self._thread = threading.Thread(
+            target=self.run_forever, name="clawvoice-worker", daemon=True
+        )
         self._thread.start()
 
     def request_stop(self) -> None:
@@ -199,7 +201,9 @@ class InferenceWorker:
             self.backend.load()
         except ModelUnavailable as exc:
             state = self.backend.state()
-            status = state.status if state.status in ("model_missing", "failed") else "model_missing"
+            status = (
+                state.status if state.status in ("model_missing", "failed") else "model_missing"
+            )
             detail = self._sanitize_detail(state.detail, fallback=str(exc))
             self._set_state(status, **detail)
             self._backend_ready = False
@@ -215,13 +219,15 @@ class InferenceWorker:
             logger.error("backend unavailable: %s", status)
             return
         except Exception:
-            self._set_state("failed", backend=self.settings.backend, reason="worker initialization failed")
+            self._set_state(
+                "failed", backend=self.settings.backend, reason="worker initialization failed"
+            )
             self._backend_ready = False
             logger.exception("backend initialization failed")
             return
         state = self.backend.state()
         self._backend_ready = state.status == "ready"
-        detail = self._sanitize_detail(state.detail or self.backend.identity(), fallback="")
+        detail = self._sanitize_detail({**self.backend.identity(), **state.detail}, fallback="")
         self._set_state(state.status, **detail)
         if self._backend_ready:
             try:
@@ -340,7 +346,10 @@ class InferenceWorker:
             if voice["backend"] != self.settings.backend:
                 raise ValidationFailure(
                     "the selected voice is not compatible with this worker backend",
-                    details={"voice_backend": voice["backend"], "worker_backend": self.settings.backend},
+                    details={
+                        "voice_backend": voice["backend"],
+                        "worker_backend": self.settings.backend,
+                    },
                 )
             if voice["model_revision"] != self.settings.model_revision:
                 raise ValidationFailure(

@@ -131,6 +131,7 @@ def test_failed_job_does_not_poison_next_profile(settings, headers, reference):
         b = b_result["voice"]
         wait_job(client, headers, a_result["audition_job"]["id"])
         wait_job(client, headers, b_result["audition_job"]["id"])
+
         def render(voice, text):
             response = client.post(
                 "/api/v1/synthesis-jobs",
@@ -232,3 +233,27 @@ def test_recovered_job_clears_stale_error_on_success(settings, headers, referenc
             assert job["error"] is None
         finally:
             worker.stop(timeout=10)
+
+
+def test_ready_worker_merges_identity_with_device_diagnostics(settings, headers):
+    from clawvoice.backends.base import BackendState
+
+    class DetailedBackend(FakeBackend):
+        def identity(self):
+            return {**super().identity(), "real_model": True, "backend": "turbo"}
+
+        def state(self):
+            return BackendState("ready", {"device": "cuda", "capability": "6.1"}, True)
+
+    app = create_app(settings, start_worker=False)
+    with TestClient(app) as client:
+        worker = InferenceWorker(
+            settings, app.state.store, app.state.audio, backend=DetailedBackend(settings)
+        )
+        worker.start_thread()
+        try:
+            ready = wait_ready(client, headers).json()
+            assert ready["checks"]["worker"]["real_model"] is True
+            assert ready["checks"]["worker"]["device"] == "cuda"
+        finally:
+            worker.stop()

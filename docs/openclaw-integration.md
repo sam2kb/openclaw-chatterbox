@@ -1,100 +1,66 @@
-# OpenClaw integration plan
+# OpenClaw integration
 
-> This is a plan and a review artifact, not evidence that a live OpenClaw
-> installation was changed. The actual OpenClaw version and effective tool
-> policy were **not inspectable** from this development session: `/srv/openclaw`
-> returned permission denied, and the referenced `D:/repos/openclaw-infra`
-> files are not present on this host. No live change was attempted.
+The `chatterbox-voice` skill lets the authorized host agent save a voice from an
+attached audio file or a browser microphone recording, then generate and return
+an audio file from the owner's exact text. It uses a local HTTP service and the
+`clawvoice` client; it does not require Torch in the agent's environment.
 
-## Current facts checked for this build (2026-10-25)
+## Install for the host agent
 
-- OpenClaw loads `SKILL.md` from `<workspace>/skills` (highest precedence),
-  managed `<state-dir>/skills`, and extra dirs. The skill here uses the
-  AgentSkills format with `name`, `description`, and `metadata.openclaw`.
-- `metadata.openclaw.requires.bins` is checked on the host at load time. A
-  sandboxed agent must also have the binary inside the sandbox.
-- `skills.entries.*.env`/`apiKey` inject into the host agent turn, **not** the
-  sandbox.
-- The documented outbound media path is `openclaw message send ... --media
-  <path>` and agent-side structured `media`/`filePath` fields.
-- These are current docs, not a claim about every installed version. Confirm
-  them with the installed version's `--help`, `openclaw skills check`, and
-  `openclaw doctor` before changing anything.
+1. Check the installed OpenClaw version, workspace and effective tool policy.
+   The main agent must be able to execute the client and read the downloaded
+   artifacts. Host binary discovery does not prove access from a sandbox.
+2. Install the client wheel in a Python 3.11 environment. Expose `clawvoice` on
+   the host agent's PATH, for example with a link in `~/.local/bin/`.
+3. Copy the service credential privately to
+   `~/.config/clawvoice/service-token`, owned by the OpenClaw service account
+   with mode 0600. The client discovers it there by default. Set
+   `CLAWVOICE_URL` only if the API is not at `http://127.0.0.1:8765`.
+4. Configure the service's public URL for the recorder, such as
+   `https://your-clawbox.example/clawvoice`, and allow that exact HTTPS origin.
+   Proxy that prefix to the loopback API, stripping the prefix. Keep the service
+   credential out of the browser; the recorder uses its scoped enrollment token.
+5. Run the deployment installer with the authorized agent workspace. It stages
+   only `skills/chatterbox-voice/`. Confirm `openclaw skills info chatterbox-voice`
+   reports it eligible and visible, and `clawvoice doctor --require-ready --json`
+   reports a ready worker with `real_model: true`.
 
-## Boundary: `coder` stays contained
+A deployment that uses these default paths does not need an OpenClaw global
+config edit, a Gateway restart, or credentials embedded in a skill file.
 
-The existing policy review says the `coder` container is offline and denies
-GPU, devices, network, credentials, Docker socket, and host access. This skill
-must not change that:
+## Owner workflow
 
-- Do not add `CLAWVOICE_URL`, tokens, skill mounts, GPU devices, or network
-  access to `coder`.
-- Do not modify or repurpose its protected `autonomous-coding-run` installer.
-- Do not install this runtime skill into `coder` merely because the host can
-  reach the service.
-- Host environment injection does not automatically enter a sandbox.
+- "Use this audio file as my voice." The agent confirms the owner's permission,
+  creates a named reference voice from the attached file, and reports its audition.
+- "Let me record a voice." The agent returns the private HTTPS enrollment link.
+  The owner records or uploads a sample, selects a clip, and saves the voice.
+- "Use that voice to say this text." The agent preserves the supplied text,
+  queues generation, waits for the result, downloads the artifact and returns it
+  to the owner in the same conversation.
 
-The intended first caller is the authorized host `main` agent, after reviewing
-its effective allowlists and tool policy.
+If several voices match, the agent asks which one. If no reference exists, it
+asks for a recording/file. Enrollment conditions on the recording and does not
+fine-tune weights. No Twilio, voice-call, Talk-mode or built-in provider change
+is part of this workflow.
 
-## Version-aware rollout
+## Verify without external delivery
 
-1. **Inventory (read-only).** On the authorized host, record
-   `openclaw --version`, the active state/workspace dirs, `openclaw skills list`
-   and `openclaw skills check`, the effective `agents.entries.main` skill
-   allowlist, and whether `main` has `exec` and outbound media. Do not edit
-   config during this step.
-2. **Stage.** Install the `clawvoice` client wheel into the execution
-   environment that will actually call it. Put the skill in a private workspace
-   skill directory (for the default single-admin setup,
-   `<workspace>/skills/chatterbox-voice/`). Stage the service token in the
-   operator's existing secret flow, mode 0600.
-3. **Readiness.** `clawvoice doctor --json` must show
-   `service.ready.status == "ready"` and the worker's
-   `checks.worker.real_model == true`. Local `torch.installed`/`model.ok` fields
-   only describe the client host; a lightweight client need not have either.
-   `openclaw skills check` must show this skill ready for `main`. Start a new
-   session or run the version-appropriate refresh so the catalog is rebuilt.
-4. **Canary.** In a new private session with `main`, ask for a short speech
-   artifact from a test voice; verify job polling, artifact download, and
-   channel attachment. Then ask for the enrollment-link flow. Do not use a real
-   person's voice for the canary.
-5. **Rollback.** Remove only the staged skill entry and its scoped client
-   environment; preserve voice data and service containers. No OpenClaw
-   restart unless its version requires one.
+Use synthetic test speech for the canary. Verify file upload, a ready real-model
+worker, job polling, artifact download, and the browser enrollment/audition flow.
+A non-delivered agent run can confirm it discovers and executes the skill without
+sending any message to another person. Then let the owner record their own voice
+and listen for similarity. GPU success alone does not establish that quality.
 
-Use supported version-specific mechanisms for any config edit. Do not overwrite
-`openclaw.json` wholesale or copy Codex-specific UI metadata into the skill.
-If version detection is ambiguous, stop at stage 2 and ask the owner.
+## Keep the development harness isolated
 
-## Sandbox path
+Do not give `coder` or dsh the service credential, a private service route, GPU
+access, host access or Docker socket. Do not install this operational skill into
+the offline coding agent. Existing host access does not authorize expanding its
+sandbox policy. If a different intended caller is sandboxed, configure only its
+approved client/secret route and verify it from that sandbox separately.
 
-If the intended calling agent is sandboxed:
+## Rollback
 
-- install the lightweight client **inside** the sandbox image or mount a
-  trusted, executable client bundle;
-- provide a private route to the service (container `localhost` is not host
-  `localhost`) and a scoped token via the sandbox's documented mount/secret
-  mechanism;
-- make an agent-writable artifact staging directory that the channel sender can
-  read;
-- test `clawvoice doctor`, a job, and attachment from the real sandbox.
-
-Do not expose the Docker socket, use host networking for convenience, or grant
-the sandbox GPU access. The inference worker owns the GPU.
-
-## Not a provider replacement
-
-This skill is a private workflow around a local HTTP service and CLI. It does
-not automatically replace OpenClaw's built-in `tts` provider, Talk mode, or
-voice-call providers. Each would require a version-specific provider contract
-and separate authorization. No such integration is claimed here.
-
-## Install artifacts
-
-- Skill: `skills/chatterbox-voice/`
-- Client wheel: built by `deploy/release.sh` as `clawvoice-<version>-py3-none-any.whl`
-- CLI: `clawvoice`
-- Service: `deploy/compose.yaml` plus the GPU/CPU overlay
-- The integration plan above is the only supported path documented by this
-  build; there is no live-install attestation.
+Remove or restore only the dedicated skill and its client link. Keep voice data
+and the token private. Service upgrade/rollback uses `deploy/clawbox` and retains
+the data volume. Follow `runbook.md`; do not overwrite `openclaw.json` wholesale.

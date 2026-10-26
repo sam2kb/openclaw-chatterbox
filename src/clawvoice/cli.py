@@ -7,6 +7,7 @@ import json
 import logging
 import sys
 import time
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
 
@@ -209,12 +210,15 @@ def command_models(args: argparse.Namespace) -> int:
             raise ConfigurationError("provide --text-file or --text")
         from .smoke import run_smoke
 
-        result = run_smoke(
-            settings,
-            reference=args.reference,
-            output=args.output,
-            text=text,
-        )
+        # Upstream libraries print model progress to stdout. Keep --json a
+        # single machine-readable document while retaining those diagnostics.
+        with redirect_stdout(sys.stderr):
+            result = run_smoke(
+                settings,
+                reference=args.reference,
+                output=args.output,
+                text=text,
+            )
         _emit(
             result,
             args,
@@ -282,15 +286,22 @@ def command_voices(args: argparse.Namespace) -> int:
             start_ms=args.start_ms,
             end_ms=args.end_ms,
         )
-        _emit(result, args, f"Added reference version for {args.voice_id}; audition job {result['audition_job']['id']}")
+        _emit(
+            result,
+            args,
+            f"Added reference version for {args.voice_id}; audition job {result['audition_job']['id']}",
+        )
         return EXIT_OK
     if args.voices_command == "list":
         result = client.list_voices()
-        human = "\n".join(
-            f"{v['id']}  {v['name']}  {v['reference']['duration_ms']} ms"
-            + ("  [default]" if v.get("is_default") else "")
-            for v in result["voices"]
-        ) or "No voices yet."
+        human = (
+            "\n".join(
+                f"{v['id']}  {v['name']}  {v['reference']['duration_ms']} ms"
+                + ("  [default]" if v.get("is_default") else "")
+                for v in result["voices"]
+            )
+            or "No voices yet."
+        )
         _emit(result, args, human)
         return EXIT_OK
     if args.voices_command == "show":
@@ -311,9 +322,13 @@ def command_voices(args: argparse.Namespace) -> int:
         return EXIT_OK
     if args.voices_command == "delete":
         if not args.yes:
-            raise ConfigurationError("pass --yes to delete a saved voice and its generated artifacts")
+            raise ConfigurationError(
+                "pass --yes to delete a saved voice and its generated artifacts"
+            )
         result = client.delete_voice(args.voice_id)
-        _emit(result, args, f"Deleted {args.voice_id} and {result['files_removed']} private file(s)")
+        _emit(
+            result, args, f"Deleted {args.voice_id} and {result['files_removed']} private file(s)"
+        )
         return EXIT_OK
     raise ConfigurationError("unknown voices command")
 
@@ -350,10 +365,7 @@ def command_render(args: argparse.Namespace) -> int:
             code = failure
             if failure == EXIT_UNAVAILABLE:
                 print("clawvoice: timed out waiting for the job", file=sys.stderr)
-    human = (
-        f"Job {job['id']}: {job['status']}\n"
-        f"Preset: {job['preset']}. No audio was published."
-    )
+    human = f"Job {job['id']}: {job['status']}\nPreset: {job['preset']}. No audio was published."
     if job.get("output_artifact_id"):
         human += f"\nArtifact: {job['output_artifact_id']}"
     _emit({"job": job, "request": result.get("request", {})}, args, human)
@@ -562,7 +574,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Local reference-conditioned voice service client",
     )
     parser.add_argument("--version", action="version", version=f"clawvoice {__version__}")
-    parser.add_argument("--json", action="store_true", dest="json_global", help="machine-readable stdout")
+    parser.add_argument(
+        "--json", action="store_true", dest="json_global", help="machine-readable stdout"
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     def common(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
@@ -637,7 +651,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     def add_render_args(p: argparse.ArgumentParser) -> None:
         p.add_argument("--voice", help="voice ID; omit to use the selected default")
-        p.add_argument("--preset", choices=["master", "mp3", "telephony", "telephony-mulaw"], default="master")
+        p.add_argument(
+            "--preset", choices=["master", "mp3", "telephony", "telephony-mulaw"], default="master"
+        )
         p.add_argument("--temperature", type=float)
         p.add_argument("--top-p", type=float)
         p.add_argument("--top-k", type=int)
@@ -651,7 +667,9 @@ def build_parser() -> argparse.ArgumentParser:
     speak.add_argument("--text-file", type=Path)
     speak.add_argument("--text")
     speak.set_defaults(func=command_render)
-    render = common(sub.add_parser("render", help="generate speech with structured text/pause segments"))
+    render = common(
+        sub.add_parser("render", help="generate speech with structured text/pause segments")
+    )
     add_render_args(render)
     render.add_argument("--segments-file", type=Path, required=True)
     render.set_defaults(func=command_render)
@@ -686,7 +704,9 @@ def build_parser() -> argparse.ArgumentParser:
     serve = sub.add_parser("serve", help="run the local API and recorder UI")
     serve.add_argument("--host")
     serve.add_argument("--port", type=int)
-    serve.add_argument("--no-worker", action="store_true", help="API only; run clawvoice worker separately")
+    serve.add_argument(
+        "--no-worker", action="store_true", help="API only; run clawvoice worker separately"
+    )
     serve.set_defaults(func=command_serve)
 
     worker = sub.add_parser("worker", help="run the dedicated inference worker")
@@ -694,7 +714,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     health = sub.add_parser("healthcheck", help="API liveness check for container health")
     health.set_defaults(func=command_healthcheck)
-    worker_health = sub.add_parser("worker-healthcheck", help="worker lease check for container health")
+    worker_health = sub.add_parser(
+        "worker-healthcheck", help="worker lease check for container health"
+    )
     worker_health.set_defaults(func=command_worker_healthcheck)
     return parser
 

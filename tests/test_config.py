@@ -98,3 +98,17 @@ def test_v1_database_migration_adds_job_reference_column(tmp_path):
         version = check.execute("PRAGMA user_version").fetchone()[0]
     assert "reference_version_id" in columns
     assert version == 2
+
+
+def test_public_url_allows_a_safe_reverse_proxy_prefix(tmp_path):
+    settings = _settings(tmp_path, public_base_url="https://cl.example/clawvoice/")
+    settings.validate()
+    assert settings.public_base_path == "/clawvoice"
+
+
+@pytest.mark.parametrize(
+    "path", ["/../admin", "//other", "/bad%2fpath", "/x?token=bad", "/x#token"]
+)
+def test_public_url_rejects_ambiguous_prefixes(tmp_path, path):
+    with pytest.raises(ConfigurationError):
+        _settings(tmp_path, public_base_url="https://cl.example" + path).validate()

@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
+  <meta name="clawvoice-base-path" content="__CLAWVOICE_BASE_PATH__">
   <title>Create a voice · clawvoice</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/styles.css">
@@ -12,7 +13,7 @@
   <header class="masthead">
     <a class="wordmark" href="/"><span class="mark" aria-hidden="true"></span>clawvoice</a>
     <span class="tagline">local voice studio</span>
-    <span class="local-pill">On this machine</span>
+    <span class="local-pill">Private voice service</span>
   </header>
 
   <main id="main">
@@ -29,7 +30,7 @@
       <aside class="studio-note" aria-label="What happens on this page">
         <div class="note-mark" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
         <p class="note-label">Reference conditioning</p>
-        <p>The clip teaches the model <em>how this voice sounds</em> for the next sentence. No gradient update, no fine-tuned checkpoint.</p>
+        <p>The model uses your clip as a reference for <em>how this voice sounds</em>. Your saved voice can be reused whenever you want to generate speech.</p>
       </aside>
     </section>
 
@@ -58,7 +59,7 @@
         </div>
 
         <p class="hint">
-          Aim for <strong>10–15 seconds</strong> of one person speaking naturally, with a
+          Aim for <strong>10-15 seconds</strong> of one person speaking naturally, with a
           quiet background. The minimum is just over 5 seconds. You can record again
           before saving.
         </p>
@@ -110,8 +111,7 @@
           <span id="clip-badge" class="badge good">sample uploaded</span>
         </div>
         <p class="hint">
-          Select the most representative stretch. The service sends this clip to the
-          model as conditioning. Your original upload is kept unchanged.
+          Select the most representative stretch. The model uses this clip as its voice reference. Your original upload is kept unchanged.
         </p>
         <div class="checks" id="checks"></div>
         <div class="range-grid">
@@ -157,7 +157,7 @@
         </div>
         <p id="done-copy" class="lede"></p>
         <div id="audition-pending" class="audition-pending">
-          <p>The first audition is being rendered in the local worker.</p>
+          <p>Your voice preview is being generated.</p>
           <progress id="audition-progress" max="100" value="15">working</progress>
         </div>
         <audio id="audition-audio" controls preload="metadata" class="hidden"></audio>
@@ -168,7 +168,7 @@
         </div>
         <div class="next">
           <h3>Generate speech</h3>
-          <p>Ask OpenClaw to generate speech with this voice, or use the <code>clawvoice</code> command line. Generation creates a local download; it does not publish audio or contact Twilio.</p>
+          <p>Tell OpenClaw which text to read with this voice. It will generate an audio file for you to download.</p>
         </div>
       </section>
       </div>

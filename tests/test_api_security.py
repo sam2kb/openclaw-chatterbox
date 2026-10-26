@@ -17,14 +17,16 @@ def test_liveness_is_public_but_other_routes_require_auth(client, headers):
         "/api/v1/artifacts/art_000000000000000000000000",
         "/api/v1/enrollment-sessions",
     ):
-        response = client.get(path) if path != "/api/v1/enrollment-sessions" else client.post(path, json={"name": "x"})
+        response = (
+            client.get(path)
+            if path != "/api/v1/enrollment-sessions"
+            else client.post(path, json={"name": "x"})
+        )
         assert response.status_code == 401, (path, response.text)
     wrong = client.get("/api/v1/voices", headers={"Authorization": "Bearer " + "x" * 40})
     assert wrong.status_code == 401
     assert client.get("/api/v1/openapi.json").status_code == 401
-    unicode_token = client.get(
-        "/api/v1/voices", headers={"Authorization": b"Bearer caf\xe9" * 8}
-    )
+    unicode_token = client.get("/api/v1/voices", headers={"Authorization": b"Bearer caf\xe9" * 8})
     assert unicode_token.status_code == 401
     schema = client.get("/api/v1/openapi.json", headers=headers)
     assert schema.status_code == 200
@@ -123,7 +125,9 @@ def test_enrollment_requires_consent_and_valid_upload_link(client, headers, refe
         headers={"Authorization": f"Bearer {other_token}"},
     )
     assert wrong.status_code == 401
-    malformed = client.get("/api/v1/enrollment-sessions/enr_000000000000000000000000", headers=scoped)
+    malformed = client.get(
+        "/api/v1/enrollment-sessions/enr_000000000000000000000000", headers=scoped
+    )
     assert malformed.status_code == 404
 
 
@@ -133,7 +137,9 @@ def test_enrollment_expiry_is_reported(settings, reference):
     application = create_app(settings, start_worker=False)
     with TestClient(application) as client:
         headers = {"Authorization": f"Bearer {settings.service_token}"}
-        response = client.post("/api/v1/enrollment-sessions", headers=headers, json={"name": "expired"})
+        response = client.post(
+            "/api/v1/enrollment-sessions", headers=headers, json={"name": "expired"}
+        )
         # The ttl is applied at session creation from the setting.
         assert response.status_code == 201
         token = response.json()["recorder_url"].split("#token=", 1)[1]
@@ -194,12 +200,18 @@ def test_expired_enrollment_cleanup_removes_staged_recording(client, headers, re
     assert removed == 1
     assert not path.exists()
     with store.db.connect() as conn:
-        assert conn.execute(
-            "SELECT COUNT(*) FROM enrollment_sessions WHERE id=?", (session["id"],)
-        ).fetchone()[0] == 0
-        assert conn.execute(
-            "SELECT COUNT(*) FROM enrollment_uploads WHERE session_id=?", (session["id"],)
-        ).fetchone()[0] == 0
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM enrollment_sessions WHERE id=?", (session["id"],)
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM enrollment_uploads WHERE session_id=?", (session["id"],)
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_json_without_content_length_is_rejected_before_buffering():
@@ -232,3 +244,23 @@ def test_json_without_content_length_is_rejected_before_buffering():
     )
     assert calls == []
     assert sent and sent[0]["status"] == 411
+
+
+def test_recorder_links_assets_and_schema_use_the_configured_prefix(settings, headers):
+    settings.public_base_url = "https://cl.example/clawvoice"
+    settings.allowed_origins = ("https://cl.example",)
+    with TestClient(create_app(settings, start_worker=False)) as client:
+        session = client.post(
+            "/api/v1/enrollment-sessions", headers=headers, json={"name": "proxy voice"}
+        ).json()
+        assert session["recorder_url"].startswith("https://cl.example/clawvoice/enroll/")
+        page = client.get("/enroll/" + session["id"])
+        assert page.status_code == 200
+        assert 'name="clawvoice-base-path" content="/clawvoice"' in page.text
+        assert 'href="/clawvoice/static/styles.css"' in page.text
+        assert 'src="/clawvoice/static/app.js"' in page.text
+        assert "__CLAWVOICE_BASE_PATH__" not in page.text
+        assert "base-uri 'none'" in page.headers["content-security-policy"]
+        assert client.get("/api/v1/voices").status_code == 401
+        schema = client.get("/api/v1/openapi.json", headers=headers).json()
+        assert schema["servers"] == [{"url": "/clawvoice"}]

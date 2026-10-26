@@ -1,8 +1,7 @@
 # Operator runbook
 
 All commands here are operational. `plan` is read-only. `install`, `upgrade`,
-`rollback`, and `uninstall` require explicit authorization; none were run
-against a live OpenClaw/Clawbox in this build.
+`rollback`, and `uninstall` require explicit authorization.
 
 ## Plan
 
@@ -55,6 +54,7 @@ and the skill is discoverable for the intended agent. Then run the canary from
 
 ```sh
 deploy/clawbox upgrade --apply --gpu --allow-unverified-target \
+  --openclaw-workspace /path/to/main-agent-workspace \
   --release /path/to/new-release
 ```
 
@@ -62,19 +62,23 @@ Use only a release bundle whose `SHA256SUMS` you verified. The installer checks
 the manifest's model identity and image tags/recorded local IDs, but this project
 does not implement package signatures. The upgrade must not silently upgrade the
 NVIDIA driver, CUDA compatibility, Python/Torch pins, or model revision. It
-backs up the current skill, stages the new skill, and restores it if Compose or
-readiness fails; it records the new release only after readiness succeeds. If
-the model revision changes, it requires a separate compatibility gate.
+starts the new service and waits for authenticated readiness before replacing
+the dedicated skill. If startup or skill staging fails, it attempts to restore
+the previous service. It records the new release only after both steps succeed.
+The recorded model mount, env file, and device mode persist across release
+folders. A model revision change requires a separate compatibility check.
 
 ## Rollback
 
 ```sh
-deploy/clawbox rollback --apply --backup <id> --json
+deploy/clawbox rollback --apply \
+  --openclaw-workspace /path/to/main-agent-workspace \
+  --backup deploy/backups/<id>/skill --json
 ```
 
-Restores the previous skill from a backup under `deploy/backups`, points
-Compose at the recorded previous release tag, and leaves the data volume
-untouched. It records the rollback only after readiness succeeds. Model files
+Starts the previous release, waits for readiness, then restores the retained
+skill under `deploy/backups`. If the prior service cannot become ready, it
+attempts to restore the current release. The data volume is untouched. It records the rollback only after readiness succeeds. Model files
 and driver state are not changed. Backups outside `deploy/backups` are refused.
 
 ## Uninstall
@@ -109,6 +113,14 @@ unprotected archive. Do not back up model weights as voice data.
 Restore the data volume, start the API first to validate schema compatibility,
 then the worker. Readiness distinguishes `model_missing`, `worker_loading`, and
 `worker_failed`; do not assume success from a running container alone.
+
+## Startup after a reboot
+
+Both runtime services use `restart: unless-stopped`. Docker starts them again
+after a host/daemon restart unless an operator stopped them. A deliberately
+stopped service needs `docker compose ... up -d` to resume. The existing NVIDIA
+driver and Docker service must already start normally. Saving this policy applies
+to the running containers; no host reboot is needed.
 
 ## Logs and incidents
 

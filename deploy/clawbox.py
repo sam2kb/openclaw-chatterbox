@@ -91,8 +91,8 @@ def hash_tree(root: Path) -> dict[str, str]:
     return result
 
 
-def skill_diff(target: Path) -> dict[str, Any]:
-    desired = hash_tree(SKILL_SRC)
+def skill_diff(target: Path, *, source: Path | None = None) -> dict[str, Any]:
+    desired = hash_tree(source or SKILL_SRC)
     existing = hash_tree(target)
     changed = sorted(
         name for name in set(desired) | set(existing) if desired.get(name) != existing.get(name)
@@ -105,7 +105,6 @@ def skill_diff(target: Path) -> dict[str, Any]:
         "desired_file_count": len(desired),
         "existing_file_count": len(existing),
     }
-
 
 
 def copy_tree(src: Path, dst: Path) -> None:
@@ -135,6 +134,7 @@ def copy_tree(src: Path, dst: Path) -> None:
         dst.chmod(0o755)
     except OSError:
         pass
+
 
 def load_release_state() -> dict[str, Any]:
     path = STATE_DIR / "install.json"
@@ -212,9 +212,7 @@ def openclaw_inventory(workspace: Path | None) -> dict[str, Any]:
         "version": version,
         "state_dir_configured": bool(env_state),
         "workspace": str(workspace) if workspace else None,
-        "skill_candidates": [
-            {"path": str(path), "present": path.is_dir()} for path in candidates
-        ],
+        "skill_candidates": [{"path": str(path), "present": path.is_dir()} for path in candidates],
         "note": "Version/policy inventory is read-only. Confirm allowlists and sandbox behavior before install.",
     }
 
@@ -254,7 +252,9 @@ def service_live(port: int) -> dict[str, Any]:
     try:
         import urllib.request
 
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/v1/health/live", timeout=3) as resp:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/api/v1/health/live", timeout=3
+        ) as resp:
             return {"reachable": True, "status": resp.status, "body": json.loads(resp.read())}
     except Exception as exc:  # bounded diagnostic only
         return {"reachable": False, "error": type(exc).__name__}
@@ -273,7 +273,11 @@ def docker_report() -> dict[str, Any]:
 
 
 def wait_container_ready(
-    args: argparse.Namespace, *, root: Path | None = None, timeout: float = 180.0
+    args: argparse.Namespace,
+    *,
+    root: Path | None = None,
+    version: str | None = None,
+    timeout: float = 180.0,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     last: dict[str, Any] = {"ready": False, "reason": "not_started"}
@@ -291,7 +295,9 @@ def wait_container_ready(
                 root=root,
             ),
             timeout=60,
-            env_overrides=release_env(load_manifest().get("release")),
+            env_overrides=release_env(
+                version or load_manifest().get("release"), host_model_dir(args)
+            ),
         )
         try:
             payload = json.loads(result.get("stdout") or "{}")
@@ -300,7 +306,9 @@ def wait_container_ready(
         ready = (payload.get("service") or {}).get("ready") or {}
         last = {
             "ready": bool(
-                result.get("returncode") == 0 and ready.get("status") == "ready"
+                result.get("returncode") == 0
+                and ready.get("status") == "ready"
+                and (ready.get("checks", {}).get("worker", {}).get("real_model") is True)
             ),
             "reason": ready.get("reason"),
             "doctor_exit": result.get("returncode"),
@@ -358,7 +366,11 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     port = int(env_file_value(args.env_file, "CLAWVOICE_PORT", "8765"))
     docker = docker_report()
     overrides = ["--gpu"] if args.gpu else (["--cpu"] if args.cpu else [])
-    compose_files = ["-f", str(COMPOSE), "-f", str(GPU if args.gpu else CPU)] if overrides else ["-f", str(COMPOSE)]
+    compose_files = (
+        ["-f", str(COMPOSE), "-f", str(GPU if args.gpu else CPU)]
+        if overrides
+        else ["-f", str(COMPOSE)]
+    )
     env_file = ["--env-file", str(Path(args.env_file).expanduser())] if args.env_file else []
     install_commands = []
     if docker["docker"]:
@@ -385,7 +397,9 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
             "status": manifest.get("status"),
             "manifest": str(MANIFEST),
             "model_revision": (manifest.get("source") or {}).get("model_revision"),
-            "target_support_verified": bool((manifest.get("runtime") or {}).get("target_support_verified")),
+            "target_support_verified": bool(
+                (manifest.get("runtime") or {}).get("target_support_verified")
+            ),
         },
         "prerequisites": {
             "docker": docker,
@@ -401,12 +415,24 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
         "skill": skill_diff(target) if target else {"target": None, "exists": False, "drift": None},
         "service": {
             "compose_files": compose_files,
-            "api_image_present": image_present((manifest.get("images") or {}).get("api", {}).get("tag")),
-            "worker_image_present": image_present((manifest.get("images") or {}).get("worker", {}).get("tag")),
-            "api_image_actual_id": image_id((manifest.get("images") or {}).get("api", {}).get("tag")),
-            "worker_image_actual_id": image_id((manifest.get("images") or {}).get("worker", {}).get("tag")),
-            "api_image_id_expected": (manifest.get("images") or {}).get("api", {}).get("local_image_id"),
-            "worker_image_id_expected": (manifest.get("images") or {}).get("worker", {}).get("local_image_id"),
+            "api_image_present": image_present(
+                (manifest.get("images") or {}).get("api", {}).get("tag")
+            ),
+            "worker_image_present": image_present(
+                (manifest.get("images") or {}).get("worker", {}).get("tag")
+            ),
+            "api_image_actual_id": image_id(
+                (manifest.get("images") or {}).get("api", {}).get("tag")
+            ),
+            "worker_image_actual_id": image_id(
+                (manifest.get("images") or {}).get("worker", {}).get("tag")
+            ),
+            "api_image_id_expected": (manifest.get("images") or {})
+            .get("api", {})
+            .get("local_image_id"),
+            "worker_image_id_expected": (manifest.get("images") or {})
+            .get("worker", {})
+            .get("local_image_id"),
             "gpu_overlay": bool(args.gpu),
             "cpu_overlay": bool(args.cpu),
             "env_file": args.env_file,
@@ -415,10 +441,12 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
             "api_image": (manifest.get("images") or {}).get("api", {}).get("tag"),
             "api_image_id": (manifest.get("images") or {}).get("api", {}).get("local_image_id"),
             "worker_image": (manifest.get("images") or {}).get("worker", {}).get("tag"),
-            "worker_image_id": (manifest.get("images") or {}).get("worker", {}).get("local_image_id"),
+            "worker_image_id": (manifest.get("images") or {})
+            .get("worker", {})
+            .get("local_image_id"),
         },
         "requirements": {
-            "model_download_bytes_approx": 4_300_000_000,
+            "model_download_bytes_approx": 3_000_000_000,
             "image_build_bytes_approx": 12_000_000_000,
             "data_min_bytes": 1_000_000_000,
             "loopback_port": port,
@@ -446,7 +474,9 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     if not plan["service"]["api_image_present"]:
         warnings.append("The API image is not present locally; build it before install/upgrade.")
     if not plan["service"]["worker_image_present"]:
-        warnings.append("The worker image is not present locally; build it on the target before install.")
+        warnings.append(
+            "The worker image is not present locally; build it on the target before install."
+        )
     return plan
 
 
@@ -482,7 +512,9 @@ def require_workspace(args: argparse.Namespace) -> Path:
     return workspace
 
 
-def stage_skill(workspace: Path, *, backup: Path | None) -> dict[str, Any]:
+def stage_skill(
+    workspace: Path, *, backup: Path | None, source: Path | None = None
+) -> dict[str, Any]:
     target = skill_target(workspace)
     assert target is not None
     skills_dir = target.parent
@@ -490,8 +522,8 @@ def stage_skill(workspace: Path, *, backup: Path | None) -> dict[str, Any]:
     staging = Path(tempfile.mkdtemp(prefix=f".{SKILL_NAME}.stage-", dir=skills_dir))
     try:
         staged_skill = staging / SKILL_NAME
-        copy_tree(SKILL_SRC, staged_skill)
-        diff = skill_diff(staged_skill)
+        copy_tree(source or SKILL_SRC, staged_skill)
+        diff = skill_diff(staged_skill, source=source)
         if diff["changed_files"]:
             raise RuntimeError("staged skill does not match the release")
         old = None
@@ -514,8 +546,64 @@ def stage_skill(workspace: Path, *, backup: Path | None) -> dict[str, Any]:
         shutil.rmtree(staging, ignore_errors=True)
 
 
-def release_env(version: str | None) -> dict[str, str] | None:
-    return {"CLAWVOICE_RELEASE": version} if version else None
+def release_env(version: str | None, model_dir: Path | None = None) -> dict[str, str]:
+    values = {"CLAWVOICE_RELEASE": version} if version else {}
+    if model_dir is not None:
+        values["CLAWVOICE_MODELS_DIR"] = str(model_dir.parent)
+    return values
+
+
+def release_skill_source(root: Path) -> Path:
+    for directory in ("skills", "skill"):
+        source = root / directory / SKILL_NAME
+        if (source / "SKILL.md").is_file():
+            return source
+    raise SystemExit("release is missing its chatterbox-voice skill")
+
+
+def operation_args(args: argparse.Namespace, state: dict[str, Any]) -> argparse.Namespace:
+    result = argparse.Namespace(**vars(args))
+    if not result.env_file and state.get("env_file"):
+        result.env_file = state["env_file"]
+    if not getattr(result, "model_dir", None) and state.get("model_dir"):
+        result.model_dir = state["model_dir"]
+    if not result.gpu and not result.cpu:
+        result.gpu = bool(state.get("gpu"))
+        result.cpu = bool(state.get("cpu"))
+    return result
+
+
+def start_release(
+    args: argparse.Namespace, root: Path, version: str | None
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    result = run(
+        compose_command(args, "up", "-d", "--no-build", root=root),
+        timeout=300,
+        env_overrides=release_env(version, host_model_dir(args)),
+    )
+    readiness = (
+        wait_container_ready(args, root=root, version=version)
+        if result.get("returncode") == 0
+        else {"ready": False, "reason": "compose_failed"}
+    )
+    return result, readiness
+
+
+def running_image_id(
+    args: argparse.Namespace, service: str, root: Path, version: str | None
+) -> str | None:
+    result = run(
+        compose_command(args, "ps", "-q", service, root=root),
+        env_overrides=release_env(version, host_model_dir(args)),
+    )
+    containers = result.get("stdout", "").splitlines()
+    if result.get("returncode") != 0 or len(containers) != 1:
+        return None
+    docker = which("docker")
+    if not docker:
+        return None
+    inspected = run([docker, "inspect", "--format", "{{.Image}}", containers[0]], timeout=20)
+    return inspected.get("stdout") if inspected.get("returncode") == 0 else None
 
 
 def restore_skill(workspace: Path, backup: Path) -> dict[str, Any]:
@@ -549,14 +637,11 @@ def restore_skill(workspace: Path, backup: Path) -> dict[str, Any]:
 
 
 def backup_root() -> Path:
-    path = BACKUPS / now_id()
-    path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    return path
+    BACKUPS.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix=now_id() + "-", dir=BACKUPS))
 
 
-def compose_command(
-    args: argparse.Namespace, *extra: str, root: Path | None = None
-) -> list[str]:
+def compose_command(args: argparse.Namespace, *extra: str, root: Path | None = None) -> list[str]:
     docker = which("docker")
     if not docker:
         raise SystemExit("docker is not installed")
@@ -586,8 +671,16 @@ def apply_install(args: argparse.Namespace) -> int:
     manifest = load_manifest()
     require_target_gate(args, manifest)
     for label, image, expected in (
-        ("API", (manifest.get("images") or {}).get("api", {}).get("tag"), (manifest.get("images") or {}).get("api", {}).get("local_image_id")),
-        ("worker", (manifest.get("images") or {}).get("worker", {}).get("tag"), (manifest.get("images") or {}).get("worker", {}).get("local_image_id")),
+        (
+            "API",
+            (manifest.get("images") or {}).get("api", {}).get("tag"),
+            (manifest.get("images") or {}).get("api", {}).get("local_image_id"),
+        ),
+        (
+            "worker",
+            (manifest.get("images") or {}).get("worker", {}).get("tag"),
+            (manifest.get("images") or {}).get("worker", {}).get("local_image_id"),
+        ),
     ):
         if not image_present(image):
             raise SystemExit(f"{label} image is not present locally: {image}; build it first")
@@ -601,7 +694,7 @@ def apply_install(args: argparse.Namespace) -> int:
     result = run(
         compose_command(args, "up", "-d", "--no-build"),
         timeout=300,
-        env_overrides=release_env(load_manifest().get("release")),
+        env_overrides=release_env(load_manifest().get("release"), host_model_dir(args)),
     )
     if result.get("returncode") != 0:
         raise SystemExit(
@@ -609,9 +702,19 @@ def apply_install(args: argparse.Namespace) -> int:
             f"exit={result.get('returncode')} stderr={result.get('stderr', '')[:300]}"
         )
     live = wait_live(int(env_file_value(args.env_file, "CLAWVOICE_PORT", "8765")))
-    readiness = wait_container_ready(args) if live.get("reachable") else {"ready": False, "reason": "api_unreachable"}
+    readiness = (
+        wait_container_ready(args)
+        if live.get("reachable")
+        else {"ready": False, "reason": "api_unreachable"}
+    )
     if not readiness.get("ready"):
-        print(json.dumps({"mode": "install", "applied": False, "live": live, "readiness": readiness}, indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                {"mode": "install", "applied": False, "live": live, "readiness": readiness},
+                indent=2,
+                sort_keys=True,
+            )
+        )
         return 1
     skill_result = stage_skill(workspace, backup=backup)
     state = load_release_state()
@@ -623,6 +726,8 @@ def apply_install(args: argparse.Namespace) -> int:
             "gpu": bool(args.gpu),
             "cpu": bool(args.cpu),
             "release_root": str(ROOT),
+            "model_dir": str(host_model_dir(args)),
+            "env_file": str(Path(args.env_file).expanduser().resolve()) if args.env_file else None,
             "installed_at": datetime.now(UTC).isoformat(),
         }
     )
@@ -641,126 +746,147 @@ def apply_install(args: argparse.Namespace) -> int:
 
 
 def apply_verify(args: argparse.Namespace) -> int:
-    workspace = Path(args.openclaw_workspace).expanduser().resolve() if args.openclaw_workspace else None
+    state = load_release_state()
+    args = operation_args(args, state)
+    root = Path(state.get("release_root", str(ROOT)))
+    manifest = json.loads((root / "deploy" / "release-manifest.json").read_text())
+    version = state.get("release") or manifest.get("release")
+    workspace = (
+        Path(args.openclaw_workspace).expanduser().resolve() if args.openclaw_workspace else None
+    )
+    if workspace is None and state.get("skill_target"):
+        workspace = Path(state["skill_target"]).parents[1]
     target = skill_target(workspace)
-    diff = skill_diff(target) if target else None
-    container_doctor = run(
-        compose_command(args, "exec", "-T", "api", "clawvoice", "doctor", "--json", "--require-ready"),
+    diff = skill_diff(target, source=release_skill_source(root)) if target else None
+    doctor = run(
+        compose_command(
+            args, "exec", "-T", "api", "clawvoice", "doctor", "--json", "--require-ready", root=root
+        ),
         timeout=180,
+        env_overrides=release_env(version, host_model_dir(args)),
     )
-    cli = find_cli()
-    doctor = (
-        container_doctor
-        if container_doctor.get("returncode") == 0
-        else (run([cli, "doctor", "--json", "--require-ready"], timeout=180) if cli else None)
-    )
-    compose_ps = run(compose_command(args, "ps", "--format", "json"), timeout=30)
-    manifest = load_manifest()
-    expected_api_id = (manifest.get("images") or {}).get("api", {}).get("local_image_id")
-    actual_api_id = image_id((manifest.get("images") or {}).get("api", {}).get("tag"))
-    image_ok = not expected_api_id or actual_api_id == expected_api_id
+    # Inspect running containers, not only locally tagged images. Both services
+    # must belong to this release; a stale worker must never pass verification.
+    images = {}
+    for service in ("api", "worker"):
+        spec = manifest.get("images", {}).get(service, {})
+        expected = spec.get("local_image_id") or image_id(spec.get("tag"))
+        actual = running_image_id(args, service, root, version)
+        images[service] = {
+            "expected_id": expected,
+            "actual_id": actual,
+            "ok": bool(expected and actual == expected),
+        }
     ok = bool(
-        doctor
-        and doctor.get("returncode") == 0
+        doctor.get("returncode") == 0
         and diff
-        and diff.get("exists")
-        and not diff.get("drift")
-        and image_ok
+        and diff["exists"]
+        and not diff["drift"]
+        and all(x["ok"] for x in images.values())
     )
-    payload = {
-        "mode": "verify",
-        "ok": ok,
-        "skill": diff,
-        "doctor": doctor,
-        "compose_ps": compose_ps,
-        "image": {"expected_id": expected_api_id, "actual_id": actual_api_id, "ok": image_ok},
-        "state": load_release_state(),
-    }
-    print(json.dumps(payload, indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "mode": "verify",
+                "ok": ok,
+                "skill": diff,
+                "doctor": doctor,
+                "images": images,
+                "state": state,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0 if ok else 1
 
 
 def apply_upgrade(args: argparse.Namespace) -> int:
     require_apply(args)
     workspace = require_workspace(args)
+    old_state = load_release_state()
+    if not old_state.get("release"):
+        raise SystemExit("no installed release is recorded; use install first")
+    args = operation_args(args, old_state)
+    previous_args = operation_args(
+        argparse.Namespace(
+            **{**vars(args), "env_file": None, "model_dir": None, "gpu": False, "cpu": False}
+        ),
+        old_state,
+    )
     new_release = Path(args.release).expanduser().resolve() if args.release else None
     if not new_release or not (new_release / "deploy" / "release-manifest.json").is_file():
         raise SystemExit("--release must point to an extracted release bundle")
-    new_manifest = json.loads(
-        (new_release / "deploy" / "release-manifest.json").read_text(encoding="utf-8")
-    )
-    if (new_manifest.get("source") or {}).get("model_revision") != (load_manifest().get("source") or {}).get("model_revision"):
+    new_manifest = json.loads((new_release / "deploy" / "release-manifest.json").read_text())
+    source = release_skill_source(new_release)
+    if new_manifest.get("source", {}).get("model_revision") != load_manifest().get(
+        "source", {}
+    ).get("model_revision"):
         raise SystemExit("model revision changed; run a new compatibility gate before upgrading")
     require_target_gate(args, new_manifest)
     if not args.gpu and not args.cpu:
         raise SystemExit("choose --gpu or --cpu explicitly; there is no implicit device mode")
-    new_images = new_manifest.get("images") or {}
-    for label, image, expected in (
-        ("API", (new_images.get("api") or {}).get("tag"), (new_images.get("api") or {}).get("local_image_id")),
-        ("worker", (new_images.get("worker") or {}).get("tag"), (new_images.get("worker") or {}).get("local_image_id")),
-    ):
-        if not image_present(image):
-            raise SystemExit(f"{label} image is not present locally: {image}; build the new release first")
-        if expected and image_id(image) != expected:
-            raise SystemExit(f"{label} image ID does not match the new release manifest")
-    old_state = load_release_state()
-    backup = backup_root() / "skill"
-    backup.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if not skill_target(workspace).exists():
-        backup = None  # type: ignore[assignment]
-    # Stage the new skill first; no service change until it validates.
-    global SKILL_SRC
-    saved_src = SKILL_SRC
-    try:
-        SKILL_SRC = new_release / "skill" / SKILL_NAME
-        skill_result = stage_skill(workspace, backup=backup)
-    finally:
-        SKILL_SRC = saved_src
-    result = run(
-        compose_command(args, "up", "-d", "--no-build", root=new_release),
-        timeout=300,
-        env_overrides=release_env(new_manifest.get("release")),
-    )
-    readiness = {"ready": False, "reason": "compose_failed"}
-    if result.get("returncode") == 0:
-        readiness = wait_container_ready(args, root=new_release)
-    if result.get("returncode") != 0 or not readiness.get("ready"):
-        # Restore the pre-upgrade skill if the deployment did not reach readiness.
-        if skill_result.get("backup"):
-            restore_skill(workspace, Path(skill_result["backup"]))
-        else:
-            target = skill_target(workspace)
-            if target:
-                shutil.rmtree(target, ignore_errors=True)
-        payload = {
-            "mode": "upgrade",
-            "applied": False,
-            "skill": skill_result,
-            "compose": result,
-            "readiness": readiness,
-        }
-        print(json.dumps(payload, indent=2, sort_keys=True))
+    for service in ("api", "worker"):
+        spec = new_manifest.get("images", {}).get(service, {})
+        if not image_present(spec.get("tag")):
+            raise SystemExit(f"{service} image is not present locally; build the new release first")
+        if spec.get("local_image_id") and image_id(spec["tag"]) != spec["local_image_id"]:
+            raise SystemExit(f"{service} image ID does not match the new release manifest")
+    old_root = Path(old_state.get("release_root", str(ROOT)))
+    result, readiness = start_release(args, new_release, new_manifest.get("release"))
+    skill_result = None
+    staging_error = None
+    if result.get("returncode") == 0 and readiness.get("ready"):
+        backup = backup_root() / "skill" if skill_target(workspace).exists() else None
+        try:
+            skill_result = stage_skill(workspace, backup=backup, source=source)
+        except Exception as exc:
+            staging_error = type(exc).__name__
+    if skill_result is None:
+        rollback, rollback_ready = start_release(previous_args, old_root, old_state["release"])
+        print(
+            json.dumps(
+                {
+                    "mode": "upgrade",
+                    "applied": False,
+                    "compose": result,
+                    "readiness": readiness,
+                    "skill_error": staging_error,
+                    "rollback": {"compose": rollback, "readiness": rollback_ready},
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
         return 1
     state = {
         "release": new_manifest.get("release"),
-        "previous_release": old_state.get("release"),
+        "previous_release": old_state["release"],
         "skill_target": skill_result["target"],
         "backup": skill_result["backup"],
         "gpu": bool(args.gpu),
         "cpu": bool(args.cpu),
         "release_root": str(new_release),
-        "previous_root": old_state.get("release_root", str(ROOT)),
+        "previous_root": str(old_root),
+        "model_dir": str(host_model_dir(args)),
+        "env_file": str(Path(args.env_file).expanduser().resolve()) if args.env_file else None,
+        "previous_settings": {k: old_state.get(k) for k in ("model_dir", "env_file", "gpu", "cpu")},
         "upgraded_at": datetime.now(UTC).isoformat(),
     }
     save_state(state)
-    payload = {
-        "mode": "upgrade",
-        "applied": True,
-        "skill": skill_result,
-        "compose": result,
-        "readiness": readiness,
-    }
-    print(json.dumps(payload, indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "mode": "upgrade",
+                "applied": True,
+                "skill": skill_result,
+                "compose": result,
+                "readiness": readiness,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 
@@ -783,25 +909,53 @@ def apply_rollback(args: argparse.Namespace) -> int:
     previous_root = Path(state.get("previous_root", str(ROOT))).expanduser()
     if not (previous_root / "deploy" / "compose.yaml").is_file():
         raise SystemExit(f"previous release root is not available: {previous_root}")
-    restored = restore_skill(workspace, backup)
-    result = run(
-        compose_command(args, "up", "-d", "--no-build", root=previous_root),
-        timeout=300,
-        env_overrides=release_env(previous_release),
-    )
-    readiness = (
-        wait_container_ready(args, root=previous_root)
-        if result.get("returncode") == 0
-        else {"ready": False, "reason": "compose_failed"}
-    )
+    previous_settings = state.get("previous_settings") or state
+    args = operation_args(args, previous_settings)
+    result, readiness = start_release(args, previous_root, previous_release)
+    restored = None
+    rollback_recovery = None
+    if result.get("returncode") == 0 and readiness.get("ready"):
+        try:
+            restored = restore_skill(workspace, backup)
+        except Exception:
+            current_args = operation_args(
+                argparse.Namespace(
+                    **{
+                        **vars(args),
+                        "env_file": None,
+                        "model_dir": None,
+                        "gpu": False,
+                        "cpu": False,
+                    }
+                ),
+                state,
+            )
+            start_release(
+                current_args, Path(state.get("release_root", str(ROOT))), state["release"]
+            )
+            raise
+    else:
+        current_args = operation_args(
+            argparse.Namespace(
+                **{**vars(args), "env_file": None, "model_dir": None, "gpu": False, "cpu": False}
+            ),
+            state,
+        )
+        recovery, recovery_ready = start_release(
+            current_args, Path(state.get("release_root", str(ROOT))), state["release"]
+        )
+        rollback_recovery = {"compose": recovery, "readiness": recovery_ready}
     if result.get("returncode") == 0 and readiness.get("ready"):
         state["release"] = previous_release
         state["previous_release"] = None
+        state["release_root"] = str(previous_root)
+        state.update({k: previous_settings.get(k) for k in ("model_dir", "env_file", "gpu", "cpu")})
         state["rolled_back_at"] = datetime.now(UTC).isoformat()
         state["backup"] = str(backup)
         save_state(state)
     payload = {
         "mode": "rollback",
+        "recovery": rollback_recovery,
         "applied": bool(result.get("returncode") == 0 and readiness.get("ready")),
         "skill": restored,
         "release": previous_release,
@@ -834,7 +988,11 @@ def apply_uninstall(args: argparse.Namespace) -> int:
     volume_result = None
     if args.delete_data:
         docker = which("docker")
-        volume_result = run([docker, "volume", "rm", volume_name], timeout=60) if docker else {"returncode": 127}
+        volume_result = (
+            run([docker, "volume", "rm", volume_name], timeout=60)
+            if docker
+            else {"returncode": 127}
+        )
         if volume_result.get("returncode") != 0:
             print(
                 json.dumps(

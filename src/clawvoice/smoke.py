@@ -53,7 +53,10 @@ def run_smoke(
         temp = Path(temp_dir)
         normalized = temp / "reference.wav"
         audio.normalize(reference, normalized, start_ms=start, end_ms=end)
-        plan = build_plan({"text": text}, settings=settings, controls=default_controls(), seed=12345)
+        reference_sha256 = sha256_file(normalized)
+        plan = build_plan(
+            {"text": text}, settings=settings, controls=default_controls(), seed=12345
+        )
         backend = TurboBackend(settings)
         load_start = time.monotonic()
         backend.load()
@@ -74,7 +77,9 @@ def run_smoke(
                     )
                     pcm.extend(result.pcm_s16le)
                     if chunk_index < len(plan.text_pieces[0].chunks) - 1:
-                        pcm.extend(audio.silence_pcm(settings.chunk_join_gap_ms, backend.sample_rate))
+                        pcm.extend(
+                            audio.silence_pcm(settings.chunk_join_gap_ms, backend.sample_rate)
+                        )
                 elapsed = time.monotonic() - pass_start
                 duration_ms = int(round((len(pcm) // 2) / backend.sample_rate * 1000))
                 metrics = dict(getattr(backend, "last_metrics", {}) or {})
@@ -105,7 +110,7 @@ def run_smoke(
         "device_detail": state.detail,
         "reference": {
             "duration_ms": end - start,
-            "sha256": sha256_file(normalized),
+            "sha256": reference_sha256,
             "checks": checks.as_dict(),
         },
         "text_chars": len(text),
@@ -121,5 +126,7 @@ def run_smoke(
     }
     compatibility_path = settings.state_dir / "compatibility.json"
     ensure_private_dir(compatibility_path.parent)
-    atomic_write(compatibility_path, json.dumps(record, indent=2, sort_keys=True).encode(), mode=0o600)
+    atomic_write(
+        compatibility_path, json.dumps(record, indent=2, sort_keys=True).encode(), mode=0o600
+    )
     return record

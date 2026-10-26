@@ -11,6 +11,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_CACHE_DIR=/tmp/uv-cache \
+    XDG_CACHE_HOME=/tmp/clawvoice-cache \
+    NUMBA_CACHE_DIR=/tmp/clawvoice-cache/numba \
+    HF_HOME=/tmp/clawvoice-cache/huggingface \
     PATH=/app/.venv/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 RUN apt-get update \
@@ -34,7 +37,8 @@ COPY src /app/src
 COPY web /app/web
 
 FROM base AS api
-RUN uv sync --frozen --no-dev --no-editable
+RUN --mount=type=cache,id=clawvoice-uv,target=/tmp/uv-cache,sharing=locked \
+    uv sync --frozen --no-dev --no-editable
 ENV CLAWVOICE_DATA_DIR=/data \
     CLAWVOICE_MODEL_DIR=/models/chatterbox-turbo \
     CLAWVOICE_WEB_DIR=/app/web \
@@ -47,7 +51,8 @@ FROM base AS worker
 # Candidate Pascal-compatible stack: Python 3.11, torch/torchaudio 2.6.0+cu124.
 # The lock resolves these from the explicit CUDA 12.4 index. Target verification
 # is still required; see docs/compatibility.md.
-RUN uv sync --frozen --no-dev --extra inference --no-editable
+RUN --mount=type=cache,id=clawvoice-uv,target=/tmp/uv-cache,sharing=locked \
+    uv sync --frozen --no-dev --extra inference --no-editable
 ENV CLAWVOICE_DATA_DIR=/data \
     CLAWVOICE_MODEL_DIR=/models/chatterbox-turbo \
     CLAWVOICE_WEB_DIR=/app/web

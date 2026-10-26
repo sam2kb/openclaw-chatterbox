@@ -16,12 +16,13 @@ import tempfile
 import unicodedata
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from html import escape
 from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Request, Response, Security
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
@@ -69,8 +70,7 @@ from .worker import InferenceWorker
 logger = logging.getLogger("clawvoice.api")
 
 ENROLLMENT_AUDITION_TEXT = (
-    "Hello. This is a preview of the voice you created. "
-    "Press 2 to hear it again."
+    "Hello. This is a preview of the voice you created. Press 2 to hear it again."
 )
 PREVIEW_AUDITION_TEXT = "Hello. This is a preview of your saved voice."
 _OPAQUE = re.compile(r"^[a-z]+_[0-9a-f]{24}$")
@@ -426,7 +426,9 @@ def _revise_voice_reference(
         )
         return voice, job
     except BaseException:
-        shutil.rmtree(settings.voices_dir / voice_id / "reference" / reference_id, ignore_errors=True)
+        shutil.rmtree(
+            settings.voices_dir / voice_id / "reference" / reference_id, ignore_errors=True
+        )
         raise
 
 
@@ -564,6 +566,7 @@ def create_app(
         redoc_url=None,
         openapi_url=None,
         lifespan=lifespan,
+        servers=[{"url": settings.public_base_path}] if settings.public_base_path else None,
     )
     app.state.settings = settings
     app.state.store = store
@@ -863,8 +866,7 @@ def create_app(
             origin=None,
         )
         recorder_url = (
-            f"{settings.public_base_url.rstrip('/')}/enroll/{session['id']}"
-            f"#token={token}"
+            f"{settings.public_base_url.rstrip('/')}/enroll/{session['id']}#token={token}"
         )
         view = _session_view(session)
         view["recorder_url"] = recorder_url
@@ -911,9 +913,7 @@ def create_app(
         session: dict[str, Any] = Depends(require_enrollment),
     ) -> dict[str, Any]:
         _require_open(session)
-        staged, size, digest = await _read_body_to_temp(
-            request, settings=settings, storage=storage
-        )
+        staged, size, digest = await _read_body_to_temp(request, settings=settings, storage=storage)
         try:
             probe = await run_in_threadpool(audio.probe, staged)
             _, checks = await run_in_threadpool(audio.inspect, staged, probe)
@@ -1035,7 +1035,10 @@ def create_app(
         dependencies=[Depends(require_service)],
     )
     def list_voices() -> dict[str, Any]:
-        return {"voices": store.list_voices(), "default_voice_id": store.get_setting("default_voice_id")}
+        return {
+            "voices": store.list_voices(),
+            "default_voice_id": store.get_setting("default_voice_id"),
+        }
 
     @app.post(
         "/api/v1/voices",
@@ -1214,8 +1217,11 @@ def create_app(
             max_queue_depth=settings.max_queue_depth,
             max_attempts=settings.max_attempts,
         )
-        response.headers["Location"] = f"/api/v1/jobs/{job['id']}"
-        return {"job": job, "request": {"text_sha256": plan.text_sha256, "chunks": plan.chunk_count}}
+        response.headers["Location"] = f"{settings.public_base_path}/api/v1/jobs/{job['id']}"
+        return {
+            "job": job,
+            "request": {"text_sha256": plan.text_sha256, "chunks": plan.chunk_count},
+        }
 
     @app.get(
         "/api/v1/jobs/{job_id}",
@@ -1319,17 +1325,25 @@ def create_app(
     def favicon() -> FileResponse:
         return FileResponse(web_dir / "favicon.svg", media_type="image/svg+xml")
 
+    def recorder_page() -> HTMLResponse:
+        prefix = escape(settings.public_base_path, quote=True)
+        document = (web_dir / "index.html").read_text(encoding="utf-8")
+        document = document.replace("__CLAWVOICE_BASE_PATH__", prefix)
+        document = document.replace('"/static/', f'"{prefix}/static/')
+        document = document.replace('href="/"', f'href="{prefix}/"')
+        return HTMLResponse(document, headers={"Cache-Control": "no-store"})
+
     @app.get("/", include_in_schema=False)
-    def root_page() -> FileResponse:
-        return FileResponse(web_dir / "index.html", media_type="text/html")
+    def root_page() -> HTMLResponse:
+        return recorder_page()
 
     @app.get("/enroll/{session_id}", include_in_schema=False)
-    def enroll_page(session_id: str) -> FileResponse:
+    def enroll_page(session_id: str) -> HTMLResponse:
         try:
             validate_id(session_id, prefixes=("enr",))
         except ValueError as exc:
             raise NotFoundError("enrollment session not found") from exc
-        return FileResponse(web_dir / "index.html", media_type="text/html")
+        return recorder_page()
 
     app.mount("/static", StaticFiles(directory=str(web_dir)), name="static")
     return app

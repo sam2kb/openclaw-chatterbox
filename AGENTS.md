@@ -14,8 +14,8 @@ git log --oneline -10
 sed -n '1,160p' .codex/HANDOFF.md   # local only, intentionally untracked
 ```
 
-Do not rewrite unrelated work. The branch is the only copy until it is pushed;
-there is no configured remote yet.
+Do not rewrite unrelated work. Inspect the configured origin before publishing.
+Local changes are not backed up to GitHub until they are pushed.
 
 ## Setup
 
@@ -58,10 +58,9 @@ clawvoice models verify --backend turbo --deep --json
 clawvoice models smoke --reference sample.wav --text "..." --output smoke.wav --json
 ```
 
-That smoke test and target hardware checks must run on the authorized Pascal
-host. This session has no usable GPU; do not change `docs/compatibility.md` to
-claim target support from mocked tests. The API container was built; verify the
-worker image only when it actually completes.
+Run the smoke test and hardware checks on the authorized Pascal host. Record
+measured results in `docs/compatibility.md`; mocked tests do not establish GPU
+support or voice quality. Build and verify both API and worker images.
 
 ## Safety boundaries
 

@@ -1,13 +1,13 @@
 # Install and operate
 
-This document describes the installable release candidate. **The target GPU
-path is not verified yet**; see `compatibility.md`.
+This document describes the deployment workflow. See `compatibility.md` for
+the measured GPU checks and remaining owner listening checks.
 
 ## Docker Compose (preferred)
 
-Prerequisites on the target: Docker Engine + Compose v2, NVIDIA driver and
+Prerequisites on the target: Docker Engine + Compose v2 or later (current Compose builds require Buildx 0.17+), NVIDIA driver and
 Container Toolkit for GPU mode, FFmpeg only inside images, approx 10 GB free for
-images plus ~4.1 GB for the pinned model, and a local filesystem for `data/`.
+images plus ~3 GB for the pinned model, and a local filesystem for `data/`.
 Do not mount model/data on NFS or SMB.
 
 ```sh
@@ -88,7 +88,7 @@ provision the model. The base client deliberately has no Torch dependency.
 | `CLAWVOICE_MODEL_DIR` | provisioned model directory | `./models/chatterbox-turbo` |
 | `CLAWVOICE_BACKEND` | `turbo` (default) or test-only `fake` | `turbo` |
 | `CLAWVOICE_DEVICE` | `cuda` or `cpu`; never silently changed | `cuda` |
-| `CLAWVOICE_PUBLIC_BASE_URL` | recorder link base | `http://127.0.0.1:8765` |
+| `CLAWVOICE_PUBLIC_BASE_URL` | recorder link base | `http://127.0.0.1:8765` (a safe HTTPS path prefix is supported) |
 | `CLAWVOICE_ALLOWED_ORIGINS` | comma-separated exact origins | base URL origin |
 | `CLAWVOICE_MAX_QUEUE_DEPTH` | bounded queued/running jobs | 32 |
 | `CLAWVOICE_ARTIFACT_RETENTION_DAYS` | generated audio retention | 7 |
@@ -106,6 +106,5 @@ it does not maintain two full installers.
 ## OpenClaw
 
 Installing the service does not install the skill or alter OpenClaw. See
-`openclaw-integration.md` for the version-aware, read-only-first integration
-plan. The current intended caller is the authorized host `main` agent, not the
-offline `coder` container. No live OpenClaw change was performed in this build.
+`openclaw-integration.md` for the integration instructions. The supported caller is the authorized host `main` agent, not the
+offline `coder` container. The installer stages only the dedicated skill; the client uses its default protected token path.

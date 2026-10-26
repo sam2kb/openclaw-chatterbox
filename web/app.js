@@ -1,6 +1,9 @@
 (() => {
   "use strict";
 
+  const basePath = (document.querySelector('meta[name="clawvoice-base-path"]')?.content || "").replace(/\/$/, "");
+  const serviceUrl = (path) => `${basePath}${path}`;
+
   const state = {
     sessionId: null,
     token: null,
@@ -100,7 +103,7 @@
     const headers = new Headers(options.headers || {});
     headers.set("Authorization", `Bearer ${state.token}`);
     if (body !== null) headers.set("Content-Type", "application/json");
-    const response = await fetch(path, {
+    const response = await fetch(serviceUrl(path), {
       ...options,
       headers,
       body: body === null ? options.body : JSON.stringify(body),
@@ -134,7 +137,9 @@
   }
 
   function detectSession() {
-    const match = window.location.pathname.match(/^\/enroll\/(enr_[0-9a-f]{24})$/);
+    const path = window.location.pathname;
+    const relativePath = basePath && path.startsWith(`${basePath}/`) ? path.slice(basePath.length) : path;
+    const match = relativePath.match(/^\/enroll\/(enr_[0-9a-f]{24})$/);
     return match ? match[1] : null;
   }
 
@@ -417,7 +422,7 @@
     ui.useRecordedButton.disabled = true;
     ui.useUploadButton.disabled = true;
     try {
-      const response = await fetch(`/api/v1/enrollment-sessions/${state.sessionId}/uploads`, {
+      const response = await fetch(serviceUrl(`/api/v1/enrollment-sessions/${state.sessionId}/uploads`), {
         method: "POST",
         headers: { Authorization: `Bearer ${state.token}`, "Content-Type": blob.type || "application/octet-stream" },
         body: blob,
@@ -489,7 +494,7 @@
       setStatus(ui.auditionStatus, "The audition succeeded but no audio artifact was returned.", "error");
       return;
     }
-    const response = await fetch(`/api/v1/enrollment-sessions/${state.sessionId}/artifacts/${artifact.id}/download`, {
+    const response = await fetch(serviceUrl(`/api/v1/enrollment-sessions/${state.sessionId}/artifacts/${artifact.id}/download`), {
       headers: { Authorization: `Bearer ${state.token}` },
     });
     if (!response.ok) {

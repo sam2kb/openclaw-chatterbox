@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import __version__
 from .errors import ConfigurationError
 from .modelspec import TURBO_REFERENCE_MAX_MS, TURBO_REVISION, TURBO_SAMPLE_RATE
 from .util import atomic_write, ensure_private_dir, new_secret
@@ -55,9 +57,9 @@ def _origin_of(url: str) -> str:
         raise ConfigurationError("CLAWVOICE_PUBLIC_BASE_URL must be an absolute http(s) URL")
     if parts.username or parts.password:
         raise ConfigurationError("CLAWVOICE_PUBLIC_BASE_URL must not contain credentials")
-    if parts.path not in ("", "/") or parts.query or parts.fragment:
+    if parts.query or parts.fragment or not re.fullmatch(r"(?:/[A-Za-z0-9_-]+)*/?", parts.path):
         raise ConfigurationError(
-            "CLAWVOICE_PUBLIC_BASE_URL must be an origin without a path, query or fragment"
+            "CLAWVOICE_PUBLIC_BASE_URL must have a simple path prefix without a query or fragment"
         )
     return f"{parts.scheme}://{parts.netloc}"
 
@@ -178,7 +180,11 @@ class Settings:
     chunk_join_gap_ms: int = 80
     chunk_target_chars: int = 280
     log_level: str = "info"
-    service_version: str = "0.1.0"
+    service_version: str = __version__
+
+    @property
+    def public_base_path(self) -> str:
+        return urlsplit(self.public_base_url).path.rstrip("/")
 
     @property
     def voices_dir(self) -> Path:
@@ -295,9 +301,7 @@ class Settings:
             max_data_bytes=_int_env(
                 "CLAWVOICE_MAX_DATA_BYTES", 20 * 1024 * 1024 * 1024, 1024**3, 10 * 1024**4
             ),
-            decoder_timeout_seconds=_int_env(
-                "CLAWVOICE_DECODER_TIMEOUT_SECONDS", 60, 5, 600
-            ),
+            decoder_timeout_seconds=_int_env("CLAWVOICE_DECODER_TIMEOUT_SECONDS", 60, 5, 600),
             log_level=_env("CLAWVOICE_LOG_LEVEL", "info") or "info",
         )
         settings.validate()

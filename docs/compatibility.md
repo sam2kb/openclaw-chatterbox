@@ -1,21 +1,33 @@
 # Compatibility and target verification
 
-**Status: the target GPU path is not verified.** This release was built in an
-environment with the same reported CPU/kernel shape but no usable GPU, no
-NVIDIA Torch, and no model weights. The test suite uses a synthetic backend and
-does not prove CUDA support, audio quality, latency, or VRAM use.
+Version 0.1.1 has loaded the pinned model and generated speech on the actual
+Clawbox GTX 1070 Ti. This establishes GPU execution for the measured stack.
+Owner listening, speaker similarity, and playback through a phone carrier
+remain unverified, so the release remains a candidate.
 
-## Owner-supplied target (not independently probed)
+## Measured target, 2026-10-26
 
-- Linux x86_64, kernel `6.12.101+deb13-amd64`
-- Ryzen 7 5800XT, 8 cores / 16 threads, 32 GB RAM
-- GTX 1070 Ti, 8 GB VRAM, driver `550.163.01`
-- Pascal compute capability 6.1
+- GTX 1070 Ti, 8 GiB VRAM, NVIDIA driver `550.163.01`, capability `6.1`.
+- Python 3.11.16, Torch and torchaudio `2.6.0+cu124`, eager FP32 inference.
+- CUDA allocation and matrix math passed. The wheel includes compatible `sm_60`.
+- All required model files passed the pinned SHA-256 checks before loading.
+- API and worker run in separate containers with a read-only root filesystem.
+  Runtime caches use `/tmp`; the worker has GPU access and the API does not.
 
-The build session's `doctor` did confirm Debian 13, the same kernel family and
-CPU model, 16 logical threads, about 31 GiB RAM, and about 328 GiB free disk. It
-also reported `nvidia-smi` failing (no usable GPU exposed to this session) and
-Torch not installed. That is not target verification.
+The smoke used a synthetic speech reference, not a real person's voice. It
+produced 5.920 seconds of mono 24 kHz audio:
+
+| Measurement | Result |
+| --- | --- |
+| Model load | 12.435 s |
+| Cold synthesis | 10.339 s (RTF 1.747) |
+| Warm synthesis | 2.086 s (RTF 0.352) |
+| Peak CUDA allocation | 3,146.1 MiB |
+| Peak process RSS | 5,147.7 MiB |
+
+These are observations from one short run, not resource or latency guarantees.
+Synthetic-reference tests cannot establish resemblance to an owner's voice.
+The release manifest records the final image identities and remaining checks.
 
 ## Pins
 
@@ -28,49 +40,25 @@ Torch not installed. That is not target verification.
 | Candidate inference runtime | torch/torchaudio `2.6.0+cu124`, Python 3.11 |
 | FFmpeg | system/container package; probe records the actual version |
 
-The lock pins `torch==2.6.0` and `torchaudio==2.6.0` through the explicit
-`https://download.pytorch.org/whl/cu124` index. This is a **candidate** selected
-because the Pascal 6.1 architecture is old and newer CUDA/PyTorch packaging has
-removed Pascal in some builds. CUDA 12.4 supports Pascal, and the 2.6.0 cu124
-wheels are the intended starting point. Do not upgrade CUDA, PyTorch, the
-NVIDIA driver, or the model revision as part of an application upgrade.
+The lock uses the explicit `https://download.pytorch.org/whl/cu124` index.
+Keep the driver, CUDA/PyTorch stack, model revision, and upstream source pins
+stable during ordinary application upgrades. A change to those pins needs a new
+hardware and audio evaluation.
 
-The lockfile is generated and checksummed; it has not been proven on the target
-GPU. The API image was built and smoke-tested in this session. The worker image
-build did not complete here because the large CUDA/NVIDIA dependency downloads
-stalled; that is not a substitute for the target build. The container digest
-becomes release evidence only after the operator builds on the target and
-records it.
+## Repeat the hardware check
 
-## Mandatory operator gate
-
-Run these on the authorized host, not in a restricted development container:
+Run on the authorized host, not the restricted development harness:
 
 ```sh
 clawvoice doctor --json
-clawvoice models fetch --backend turbo \
-  --revision 749d1c1a46eb10492095d68fbcf55691ccf137cd
 clawvoice models verify --backend turbo --deep --json
 clawvoice models smoke --reference /path/to/owner-approved-sample.wav \
   --text-file /path/to/smoke.txt --output /tmp/clawvoice-smoke.wav --json
-clawvoice doctor --json
 ```
 
-Accept the GPU path only if all are true:
-
-- `doctor.torch.allocation_math.passed` is true on the GTX 1070 Ti.
-- `doctor.torch.capability` is `6.1`, and the compiled arch list includes the
-  device's architecture or a compatible one.
-- Worker startup performs a deep SHA-256 verification of the pinned model files,
-  and `models smoke` produces non-empty audio and a finite, measured duration.
-- Peak VRAM, process RAM, cold load time, warm render latency, generated
-  duration, and real-time factor are recorded from the actual run. Do not
-  promise a footprint before measuring.
-- A two-profile acceptance run passes (see `evaluation.md`).
-
-Then update this document with measured numbers and the tested image digest and
-mark the target verified. Until then, all install instructions produce a
-release candidate, not a target-supported deployment.
+The lightweight host client does not need Torch; its service readiness reports
+the container worker. Run `models smoke` inside the worker runtime for GPU
+measurements. See `evaluation.md` for owner listening and two-profile checks.
 
 ## Runtime policy
 

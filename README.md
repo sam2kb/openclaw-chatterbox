@@ -1,32 +1,78 @@
 # openclaw-chatterbox
 
-A local, reference-conditioned voice service built on Chatterbox Turbo, with a
-small browser recorder, a lightweight `clawvoice` CLI, and an OpenClaw skill.
+Save a voice from a microphone recording or audio file, then ask OpenClaw to
+turn your text into an audio file. Chatterbox Turbo generates speech locally;
+the service keeps recordings and generated files in private storage.
 
-> Status: **buildable release candidate; target hardware support is not yet
-> verified.** This repository was implemented in a development environment
-> without a usable GPU. See [docs/compatibility.md](docs/compatibility.md) for
-> the explicit target-only gates.
+## Use it through OpenClaw
 
-## What works
+After installation, you can say:
 
-- Create a named voice from a microphone recording or an audio file. This is
-  reference-conditioned cloning: it stores your recording and uses it as the
-  model prompt. It does **not** fine-tune model weights.
-- Generate new speech from literal UTF-8 text, with a selected voice.
-- Render structured text/pause segments; `pause_ms: 2000` inserts 2,000 ms of
-  digital silence during assembly, not a punctuation hint to the model.
-- Master WAV, MP3, 8 kHz telephony WAV, and optional raw mu-law outputs.
-- Durable SQLite queue with one inference worker, cancellation, restart
-  recovery, and serialized profile conditioning.
-- Short-lived, single-enrollment browser sessions with scoped credentials.
-- OpenAPI schema and a stdlib-only client that installs without Torch.
+- "Create a voice called My voice from this audio file." Attach a recording
+  you own or have permission to use.
+- "I'd like to record a new voice." OpenClaw gives you a private HTTPS link
+  where you can use the microphone or upload a file.
+- "Use My voice to make a WAV saying: Thank you for calling. Please leave a
+  message after the tone."
+- "Make an MP3 of this text using My voice."
 
-## Quick start (development, fake backend only)
+OpenClaw saves the voice, waits for generation, and returns the audio file.
+You can reuse a saved voice without uploading the sample again. A clear
+10-15 second clip is recommended; the recorder lets you preview and select it.
+
+Requests to "train a voice" use the sample as a reference for synthesis. This
+is reference-conditioned cloning: enrollment stores the recording and does not
+fine-tune model weights. Voice identity is consent-attested, not automatically
+verified. See [recording guidance](docs/recording.md) and the
+[training boundary](docs/training.md).
+
+## Deployment status
+
+Version 0.1.1 fixes real GPU startup on a read-only filesystem, worker readiness,
+smoke-test reporting, HTTPS path-prefix routing, and upgrade recovery. The pinned
+Torch 2.6.0/CUDA 12.4 stack has loaded and generated speech on a GTX 1070 Ti.
+[Compatibility results](docs/compatibility.md) distinguish measured GPU behavior
+from the listening and speaker-similarity checks that still need an owner review.
+
+The OpenClaw integration is a skill and lightweight client. It provides the
+recording/file-to-voice and text-to-audio workflow; it does not replace Talk mode,
+OpenClaw's built-in TTS provider, or voice-call providers.
+
+## Install
+
+Use [the installation guide](docs/install.md) to build the API and worker,
+provision the pinned model, and install the skill for the authorized host agent.
+The deployment plan is read-only:
+
+```sh
+deploy/clawbox plan --json
+```
+
+A private HTTPS route may use a prefix such as `/clawvoice/`. Set
+`CLAWVOICE_PUBLIC_BASE_URL` to that full service URL and
+`CLAWVOICE_ALLOWED_ORIGINS` to the HTTPS origin. The API port stays on loopback.
+The browser uses a short-lived, single-enrollment credential; the service
+credential remains in a protected file on the host.
+
+## Outputs and behavior
+
+- Master 24 kHz mono WAV, MP3, 8 kHz telephony WAV, and optional raw mu-law.
+- Structured text/pause segments. A `pause_ms: 2000` segment inserts exactly
+  2,000 ms of digital silence during assembly.
+- Durable SQLite queue with one inference worker, cancellation and interrupted
+  job recovery. Profile conditioning is serialized and restored between renders.
+- Explicit model provisioning and no automatic CPU fallback.
+- Private local artifacts. Sending to other people, Twilio changes, calls, and
+  publishing are outside this service.
+
+## Developer quick start
+
+The fake backend exercises the API and recorder without loading a model. It
+produces a tone and cannot establish voice quality or GPU support.
 
 ```sh
 uv venv .venv --python 3.11
-uv sync --extra dev
+uv sync --frozen --extra dev
 export CLAWVOICE_DATA_DIR="$PWD/var"
 export CLAWVOICE_BACKEND=fake
 export CLAWVOICE_ALLOW_FAKE=1
@@ -35,21 +81,19 @@ export CLAWVOICE_TOKEN_FILE="$PWD/var/secrets/service-token"
 .venv/bin/clawvoice serve
 ```
 
-Open <http://127.0.0.1:8765/>. The fake backend is for exercising the API/UI and
-tests only; it is not Chatterbox and produces a tone.
-
-For the real path, see [docs/install.md](docs/install.md) and
-[docs/compatibility.md](docs/compatibility.md). The pinned Turbo model is
-provisioned with:
+Open <http://127.0.0.1:8765/>. For real synthesis, provision the model explicitly:
 
 ```sh
 clawvoice models fetch --backend turbo --revision 749d1c1a46eb10492095d68fbcf55691ccf137cd
 ```
 
-The worker refuses to start without provisioned files; it never downloads a
-model during a caller's request and never falls back from CUDA to CPU.
+The worker checks the pinned files before loading and does not fetch weights
+during an audio request.
 
-## CLI
+## Operator CLI
+
+The client installs without Torch. Ordinary use through OpenClaw does not
+require the owner to run these commands:
 
 ```sh
 clawvoice doctor --json
@@ -57,39 +101,19 @@ clawvoice enroll start --name my-voice --json
 clawvoice voices create --name my-voice --audio ./sample.wav --authorized
 clawvoice voices revise voc_... --audio ./new-sample.wav --authorized
 clawvoice voices list --json
-clawvoice speak --voice voc_... --text-file greeting.txt --preset master --json
-clawvoice render --voice voc_... --segments-file greeting.json --preset telephony --json
-clawvoice jobs status job_... --json
+clawvoice speak --voice voc_... --text-file greeting.txt --preset master --json --wait
+clawvoice render --voice voc_... --segments-file greeting.json --preset telephony --json --wait
 clawvoice artifacts fetch art_... --output greeting.wav --json
 ```
 
-Secrets are read from a mode-0600 token file or a runtime secret environment
-variable, never from command arguments. Use `--json` for machine-readable
-stdout; diagnostics go to stderr.
+Credentials come from a mode-0600 file or runtime secret environment variable,
+never from command arguments. JSON results go to stdout and diagnostics to stderr.
 
-## Design boundaries
-
-- This service only generates local audio artifacts. It does not publish them,
-  change Twilio, or send messages.
-- Voice enrollment is consent-attested by the owner. Speaker identity is not
-  automatically verified.
-- `docs/training.md` explains why no training command ships.
-- The current OpenClaw integration is a skill + CLI client, not a replacement
-  for OpenClaw's built-in TTS provider, Talk mode, or voice-call providers.
-
-See [docs/architecture.md](docs/architecture.md), [docs/security.md](docs/security.md),
-[docs/api.md](docs/api.md), [docs/runbook.md](docs/runbook.md), and
-[docs/training.md](docs/training.md). The deploy plan is:
-
-```sh
-deploy/clawbox plan --json
-```
-
-The API image is built and smoke-tested; the Pascal worker image and real-model
-acceptance remain target gates. Do not describe this release candidate as
-target-supported until those gates are recorded.
+See [architecture](docs/architecture.md), [security](docs/security.md),
+[API](docs/api.md), [operations](docs/runbook.md), and
+[OpenClaw integration](docs/openclaw-integration.md).
 
 ## License
 
-Project code is Apache-2.0. Chatterbox and the pinned Turbo checkpoint are MIT;
-their notices are included in `THIRD_PARTY_NOTICES.md`.
+Project code is Apache-2.0. Chatterbox, the pinned Turbo checkpoint and Perth
+are MIT; their notices are in `THIRD_PARTY_NOTICES.md`.

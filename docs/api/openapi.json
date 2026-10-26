@@ -381,7 +381,7 @@
   "info": {
     "description": "Local reference-conditioned voice service. All voice/audio routes require a bearer token.",
     "title": "clawvoice API",
-    "version": "0.1.0"
+    "version": "0.1.1"
   },
   "openapi": "3.1.0",
   "paths": {

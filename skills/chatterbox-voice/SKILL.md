@@ -1,6 +1,6 @@
 ---
 name: chatterbox-voice
-description: Create named local voices from recordings and generate private speech audio with clawvoice.
+description: Use an audio file or microphone recording as a saved voice, then turn supplied text into an audio file. Handles requests to train or clone a voice with Chatterbox.
 metadata:
   {
     "openclaw": {
@@ -15,6 +15,24 @@ metadata:
 
 Use this skill when the owner asks to create a voice, record or upload a voice
 sample, generate speech, or build a phone greeting from a named voice.
+
+## Conversation workflow
+
+- If the owner says "train my voice" or "use this voice", treat that as creating
+  a saved reference voice. Explain reference conditioning briefly; do not require
+  the owner to learn CLI commands.
+- For an attached audio file, use its existing local media path with
+  `clawvoice voices create --name <name> --audio <path> --authorized --json`
+  after the owner confirms they own the voice or have permission. Keep the
+  original file private. Report the saved voice name and audition result.
+- For a microphone recording, run `clawvoice enroll start --name <name> --json`
+  and give the owner the returned private HTTPS link. That page also accepts an
+  uploaded file. Never ask the owner to paste the service credential.
+- When text is supplied, save the exact text to a private UTF-8 file, select the
+  requested saved voice (or the default), render it, wait for the job, and fetch
+  the audio to an agent-accessible path. Return that audio file to the owner.
+- Reuse a saved voice by name or ID. If several voices match, clarify the choice.
+  Ask for missing text or a voice sample only when it is needed to proceed.
 
 ## Start every run
 
