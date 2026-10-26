@@ -291,7 +291,7 @@ def build_report(settings: Settings) -> dict[str, Any]:
     report = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "service_version": settings.service_version,
-        "client_version": "0.1.0",
+        "client_version": settings.service_version,
         "os": {
             "system": platform.system(),
             "release": platform.release(),
@@ -328,6 +328,21 @@ def build_report(settings: Settings) -> dict[str, Any]:
             "This report does not download models, install packages, or change service state.",
         ],
     }
+    remote = report.get("service", {}).get("ready") or {}
+    worker = remote.get("checks", {}).get("worker", {})
+    report["assessment"] = {
+        "status": "ready" if ready_enough(report) else "not_ready",
+        "authority": "service_worker",
+        "reason": remote.get("reason", "service_unreachable"),
+        "real_model": worker.get("real_model", False),
+        "device": worker.get("device"),
+        "local_dependencies_required_for_client": False,
+        "cleanup": remote.get("checks", {}).get("cleanup", {}),
+    }
+    report["local_runtime"] = {"scope": "client_machine_only", "torch": report["torch"], "model": report["model"]}
+    report["torch"]["scope"] = "client_machine_only"
+    report["model"]["scope"] = "client_machine_only"
+    report["notes"].insert(0, "Service worker readiness is authoritative. A lightweight client does not need local Torch or model weights.")
     return report
 
 
@@ -337,13 +352,16 @@ def ready_enough(report: dict[str, Any]) -> bool:
     return bool(
         service.get("reachable")
         and ready.get("status") == "ready"
-        and report.get("model", {}).get("ok")
+        and ready.get("checks", {}).get("worker", {}).get("real_model") is True
     )
 
 
 def render_text(report: dict[str, Any]) -> str:
     lines = [
         "clawvoice doctor",
+        f"  Service worker: {report.get('assessment', {}).get('status', 'unknown')} "
+        f"(real model: {report.get('assessment', {}).get('real_model', False)})",
+        "  Local probes below describe this client; missing local Torch/weights do not block a ready worker.",
         f"  OS: {report['os']['system']} {report['os']['release']} ({report['os']['machine']})",
         f"  CPU: {(report['cpu'].get('model') or 'unknown')} · {report['cpu'].get('logical_threads')} threads",
     ]
@@ -378,6 +396,9 @@ def render_text(report: dict[str, Any]) -> str:
     ready = service.get("ready") or {}
     if ready:
         lines.append(f"  Readiness: {ready.get('status')} ({ready.get('reason')})")
+    cleanup = ready.get("checks", {}).get("cleanup", {})
+    if cleanup:
+        lines.append(f"  Cleanup: {cleanup.get('status', 'unknown')}, every {cleanup.get('interval_seconds')} s; last run {cleanup.get('last_run_at')}")
     lines.append(f"  Target support verified: {report.get('target_support_verified')}")
     lines.append("")
     lines.append("A build/dev check is not target verification. Run models smoke on the authorized GPU host.")

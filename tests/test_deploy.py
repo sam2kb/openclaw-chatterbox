@@ -50,10 +50,14 @@ def stub_plan(monkeypatch, *, model_ok=True):
     monkeypatch.setattr(clawbox, "port_status", lambda port: {"port": port, "listening": False})
 
 
-def test_plan_is_read_only_and_reports_drift(tmp_path, monkeypatch):
+@pytest.mark.parametrize("target_verified", [False, True])
+def test_plan_is_read_only_and_reports_drift(tmp_path, monkeypatch, target_verified):
     workspace = tmp_path / "workspace"
     (workspace / "skills").mkdir(parents=True)
     stub_plan(monkeypatch)
+    manifest = clawbox.load_manifest()
+    manifest["runtime"]["target_support_verified"] = target_verified
+    monkeypatch.setattr(clawbox, "load_manifest", lambda: manifest)
     before = sorted(p.relative_to(workspace).as_posix() for p in workspace.rglob("*"))
     plan = clawbox.build_plan(args_for(tmp_path, workspace))
     after = sorted(p.relative_to(workspace).as_posix() for p in workspace.rglob("*"))
@@ -62,8 +66,8 @@ def test_plan_is_read_only_and_reports_drift(tmp_path, monkeypatch):
     assert plan["side_effects"] == "none"
     assert plan["skill"]["drift"] is True  # desired files are not installed yet
     assert plan["prerequisites"]["model"]["ok"] is True
-    assert plan["release"]["target_support_verified"] is False
-    assert any("target GPU support is unverified" in item for item in plan["warnings"])
+    assert plan["release"]["target_support_verified"] is target_verified
+    assert any("target GPU support is unverified" in item for item in plan["warnings"]) is (not target_verified)
 
 
 def test_stage_skill_backs_up_and_restores(tmp_path):
@@ -119,7 +123,7 @@ def test_skill_release_files_match_manifest_identity():
     skill = (ROOT / "skills" / "chatterbox-voice" / "SKILL.md").read_text()
     assert "metadata:" in skill
     assert "openclaw" in skill
-    assert "does **not**" in skill
+    assert "does not train model weights" in " ".join(skill.replace("**", "").split())
 
 
 def test_rollback_restores_skill_backup(tmp_path, monkeypatch):
@@ -139,9 +143,17 @@ def test_rollback_restores_skill_backup(tmp_path, monkeypatch):
 
 
 def _installed_state(tmp_path, workspace):
+    import json
+
+    old_root = tmp_path / "previous-release"
+    (old_root / "deploy").mkdir(parents=True, exist_ok=True)
+    previous_manifest = clawbox.load_manifest()
+    previous_manifest["release"] = "0.1.0"
+    (old_root / "deploy/release-manifest.json").write_text(json.dumps(previous_manifest))
+    (old_root / "deploy/compose.yaml").write_text((ROOT / "deploy/compose.yaml").read_text())
     return {
         "release": "0.1.0",
-        "release_root": str(ROOT),
+        "release_root": str(old_root),
         "skill_target": str(workspace / "skills" / "chatterbox-voice"),
         "gpu": True,
         "cpu": False,
@@ -299,7 +311,7 @@ def test_failed_rollback_recovers_current_service_without_replacing_skill(tmp_pa
         release="0.1.1",
         previous_release="0.1.0",
         release_root=str(current),
-        previous_root=str(ROOT),
+        previous_root=state["release_root"],
         backup=str(backup),
     )
     monkeypatch.setattr(clawbox, "BACKUPS", backups)
@@ -321,3 +333,107 @@ def test_failed_rollback_recovers_current_service_without_replacing_skill(tmp_pa
     args.apply = True
     assert clawbox.apply_rollback(args) == 1
     assert calls == ["0.1.0", "0.1.1"]
+
+
+def test_verified_snapshot_rejects_changed_archive(tmp_path, monkeypatch):
+    import hashlib
+    import json
+
+    backups = tmp_path / "backups"
+    directory = backups / "snapshot" / "data"
+    directory.mkdir(parents=True)
+    monkeypatch.setattr(clawbox, "BACKUPS", backups)
+    archive = directory / "data.tar.gz"
+    archive.write_bytes(b"consistent test snapshot")
+    manifest = directory / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "consistent": True,
+                "sqlite_quick_check": "ok",
+                "data_schema_version": 2,
+                "volume": "openclaw-chatterbox_clawvoice-data",
+                "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+            }
+        )
+    )
+    assert clawbox.validate_data_backup(manifest, 2)["data_schema_version"] == 2
+    archive.write_bytes(b"changed")
+    with pytest.raises(SystemExit, match="checksum"):
+        clawbox.validate_data_backup(manifest, 2)
+
+
+def test_schema_upgrade_failure_never_launches_old_app_against_new_data(tmp_path, monkeypatch):
+    import json
+
+    workspace = tmp_path / "workspace"
+    (workspace / "skills").mkdir(parents=True)
+    clawbox.stage_skill(workspace, backup=None)
+    state = _installed_state(tmp_path, workspace)
+    old_manifest_path = Path(state["release_root"]) / "deploy/release-manifest.json"
+    old_manifest = json.loads(old_manifest_path.read_text())
+    old_manifest["data_schema_version"] = 2
+    old_manifest_path.write_text(json.dumps(old_manifest))
+    release = _new_release(tmp_path)
+    new_manifest_path = release / "deploy/release-manifest.json"
+    new_manifest = json.loads(new_manifest_path.read_text())
+    new_manifest["data_schema_version"] = 3
+    new_manifest_path.write_text(json.dumps(new_manifest))
+    monkeypatch.setattr(clawbox, "load_release_state", lambda: state)
+    monkeypatch.setattr(clawbox, "image_present", lambda image: True)
+    monkeypatch.setattr(
+        clawbox,
+        "image_id",
+        lambda image: next(
+            s.get("local_image_id") for s in new_manifest["images"].values() if s["tag"] == image
+        ),
+    )
+    monkeypatch.setattr(clawbox, "validate_data_backup", lambda *a: {"consistent": True})
+    monkeypatch.setattr(
+        clawbox, "save_state", lambda *a: pytest.fail("failed upgrade changed state")
+    )
+    calls = []
+
+    def start(args, root, version):
+        calls.append(root)
+        return {"returncode": 0}, {"ready": False}
+
+    monkeypatch.setattr(clawbox, "start_release", start)
+    args = args_for(tmp_path, workspace, "upgrade")
+    args.apply = args.allow_unverified_target = True
+    args.release = str(release)
+    args.data_backup = str(tmp_path / "snapshot/manifest.json")
+    assert clawbox.apply_upgrade(args) == 1
+    assert calls == [release]
+
+
+def test_schema_upgrade_without_snapshot_stops_before_service_change(tmp_path, monkeypatch):
+    import json
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    state = _installed_state(tmp_path, workspace)
+    old = Path(state["release_root"]) / "deploy/release-manifest.json"
+    data = json.loads(old.read_text())
+    data["data_schema_version"] = 2
+    old.write_text(json.dumps(data))
+    release = _new_release(tmp_path)
+    target = release / "deploy/release-manifest.json"
+    data = json.loads(target.read_text())
+    data["data_schema_version"] = 3
+    target.write_text(json.dumps(data))
+    monkeypatch.setattr(clawbox, "load_release_state", lambda: state)
+    monkeypatch.setattr(clawbox, "image_present", lambda image: True)
+    monkeypatch.setattr(
+        clawbox,
+        "image_id",
+        lambda image: next(
+            s.get("local_image_id") for s in data["images"].values() if s["tag"] == image
+        ),
+    )
+    monkeypatch.setattr(clawbox, "start_release", lambda *a: pytest.fail("snapshot was skipped"))
+    args = args_for(tmp_path, workspace, "upgrade")
+    args.apply = args.allow_unverified_target = True
+    args.release = str(release)
+    with pytest.raises(SystemExit, match="verified snapshot"):
+        clawbox.apply_upgrade(args)

@@ -148,7 +148,9 @@ def split_text(text: str, target_chars: int, *, max_chunks: int) -> list[str]:
     chunks: list[str] = []
     current = ""
     for token in tokens:
-        if current and len(current) + len(token) > target_chars:
+        sentence_end = bool(re.search(r"[.!?][\"'\)\]]*\s+$", current))
+        abbreviation = bool(re.search(r"\b(?:Mr|Mrs|Ms|Dr|St|[A-Z])\.\s+$", current))
+        if current and (len(current) + len(token) > target_chars or (sentence_end and not abbreviation)):
             chunks.append(current)
             if len(chunks) > max_chunks:
                 raise ValidationFailure(

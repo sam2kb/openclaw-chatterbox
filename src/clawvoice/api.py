@@ -117,6 +117,8 @@ def _session_view(session: dict[str, Any], now: int | None = None) -> dict[str, 
         "voice_id": session.get("voice_id"),
         "audition_job_id": session.get("audition_job_id"),
         "create_voice_once": True,
+        "mode": "revise" if session.get("target_voice_id") else "create",
+        "target_voice_id": session.get("target_voice_id"),
         "permissions": "upload-and-audition-only" if status != "expired" else "none",
     }
 
@@ -389,6 +391,8 @@ def _revise_voice_reference(
     end_ms: int | None,
     store: Store,
     storage: StorageManager,
+    session_id: str | None = None,
+    upload_id: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if not authorized:
         raise ValidationFailure(
@@ -405,8 +409,8 @@ def _revise_voice_reference(
         reference_id=reference_id,
         start_ms=start_ms,
         end_ms=end_ms,
-        origin="direct-revision",
-        session_id=None,
+        origin="browser-revision" if session_id else "direct-revision",
+        session_id=session_id,
         storage=storage,
     )
     audition_input, controls, seed = _audition_job_payload()
@@ -423,6 +427,8 @@ def _revise_voice_reference(
             },
             max_queue_depth=settings.max_queue_depth,
             max_attempts=settings.max_attempts,
+            session_id=session_id,
+            upload_id=upload_id,
         )
         return voice, job
     except BaseException:
@@ -520,28 +526,31 @@ def create_app(
         # it is the caller's responsibility that they point at the same DB.
         pass
 
+    def run_cleanup() -> dict[str, Any]:
+        result: dict[str, Any] = {"last_run_at": iso_from_ms(now_ms()), "status": "ok"}
+        try:
+            result.update(
+                expired_artifacts=storage.cleanup_expired_artifacts(),
+                expired_enrollments=storage.cleanup_expired_enrollments(),
+                temporary_files=storage.cleanup_temp(),
+                orphan_files=storage.cleanup_orphans(),
+            )
+            db.checkpoint()
+        except Exception as exc:
+            result.update(status="error", error_type=type(exc).__name__)
+            logger.exception("storage cleanup failed")
+        store.set_setting("cleanup_status", json.dumps(result))
+        return result
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         async def cleanup_loop() -> None:
             while True:
                 await asyncio.sleep(settings.cleanup_interval_seconds)
-                try:
-                    await asyncio.to_thread(storage.cleanup_expired_artifacts)
-                    await asyncio.to_thread(storage.cleanup_expired_enrollments)
-                    await asyncio.to_thread(storage.cleanup_temp)
-                    await asyncio.to_thread(storage.cleanup_orphans)
-                    await asyncio.to_thread(db.checkpoint)
-                except Exception:
-                    logger.exception("periodic storage cleanup failed")
+                await asyncio.to_thread(run_cleanup)
 
         cleanup_task: asyncio.Task | None = None
-        try:
-            storage.cleanup_expired_artifacts()
-            storage.cleanup_expired_enrollments()
-            storage.cleanup_temp()
-            db.checkpoint()
-        except Exception:
-            logger.exception("startup storage cleanup failed")
+        run_cleanup()
         if settings.cleanup_interval_seconds > 0:
             cleanup_task = asyncio.create_task(cleanup_loop(), name="clawvoice-cleanup")
         if start_worker and worker_instance is not None:
@@ -753,6 +762,12 @@ def create_app(
             "real_model": worker_info.get("detail", {}).get("real_model"),
         }
         checks["queue"] = {"depth": store.queue_depth(), "counts": store.job_counts()}
+        checks["cleanup"] = {
+            "enabled": settings.cleanup_interval_seconds > 0,
+            "interval_seconds": settings.cleanup_interval_seconds,
+            "artifact_retention_days": settings.artifact_retention_days,
+            **json.loads(store.get_setting("cleanup_status") or "{}"),
+        }
         checks["storage"] = {
             "data_dir_writable": os.access(settings.data_dir, os.W_OK),
             "usage_bytes": storage.usage_bytes(),
@@ -857,13 +872,14 @@ def create_app(
         responses={401: {"model": ErrorResponse}},
     )
     def create_enrollment_session(body: EnrollmentSessionRequest) -> dict[str, Any]:
-        name = _safe_name(body.name)
+        name = store.get_voice(body.voice_id)["name"] if body.voice_id else _safe_name(body.name)
         token = new_secret(32)
         session = store.create_enrollment_session(
             name=name,
             token_hash=token_hash(token),
             ttl_seconds=settings.enrollment_ttl_seconds,
             origin=None,
+            target_voice_id=body.voice_id,
         )
         recorder_url = (
             f"{settings.public_base_url.rstrip('/')}/enroll/{session['id']}#token={token}"
@@ -976,21 +992,29 @@ def create_app(
         name = _safe_name(body.name)
         upload_row = store.get_enrollment_upload(session_id, body.upload_id)
         staged = storage.resolve(upload_row["original_path"])
-        voice, job = _normalize_staged_voice(
-            settings=settings,
-            audio=audio,
-            staged=staged,
-            audio_sha256=upload_row["sha256"],
-            name=name,
-            authorized=body.authorized,
-            start_ms=body.start_ms,
-            end_ms=body.end_ms,
-            origin="enrollment",
-            session_id=session_id,
-            upload_id=body.upload_id,
-            store=store,
-            storage=storage,
-        )
+        if session.get("target_voice_id"):
+            voice, job = _revise_voice_reference(
+                settings=settings, audio=audio, staged=staged,
+                audio_sha256=upload_row["sha256"], voice_id=session["target_voice_id"],
+                authorized=body.authorized, start_ms=body.start_ms, end_ms=body.end_ms,
+                store=store, storage=storage, session_id=session_id, upload_id=body.upload_id,
+            )
+        else:
+            voice, job = _normalize_staged_voice(
+                settings=settings,
+                audio=audio,
+                staged=staged,
+                audio_sha256=upload_row["sha256"],
+                name=name,
+                authorized=body.authorized,
+                start_ms=body.start_ms,
+                end_ms=body.end_ms,
+                origin="enrollment",
+                session_id=session_id,
+                upload_id=body.upload_id,
+                store=store,
+                storage=storage,
+            )
         # The store transaction removed the staging row. The copied original
         # remains in the voice directory; remove only the now-orphaned staged file.
         try:
@@ -1034,9 +1058,9 @@ def create_app(
         tags=["voices"],
         dependencies=[Depends(require_service)],
     )
-    def list_voices() -> dict[str, Any]:
+    def list_voices(include_archived: bool = False) -> dict[str, Any]:
         return {
-            "voices": store.list_voices(),
+            "voices": store.list_voices(include_archived=include_archived),
             "default_voice_id": store.get_setting("default_voice_id"),
         }
 
@@ -1345,5 +1369,10 @@ def create_app(
             raise NotFoundError("enrollment session not found") from exc
         return recorder_page()
 
+    from .review import register_review_routes
+    register_review_routes(
+        app, settings=settings, store=store, storage=storage,
+        require_service=require_service, artifact_response=_artifact_response, web_dir=web_dir,
+    )
     app.mount("/static", StaticFiles(directory=str(web_dir)), name="static")
     return app

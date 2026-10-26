@@ -1,39 +1,47 @@
-# Deliver audio without publishing it
-
-Only deliver to the owner in the conversation that requested the audio. If the
-request arrived in a group or shared channel, ask for a private destination.
-
-## Use the installed channel's documented media mechanism
-
-OpenClaw's outbound-media command (current docs checked 2026-10-25) is:
+# Playable audio in the requesting conversation
 
 ```sh
-openclaw message send --channel <current-channel> --target <current-target> \
-  --message "Here is the generated greeting." \
-  --media <agent-accessible-path>/greeting.wav --json
+clawvoice deliver <master-id> [<master-id> ...] --player --json
 ```
 
-Use the current channel and target already known to the session; do not invent
-one. If the agent's native message tool has documented `media`/`filePath`
-fields, you may use those instead. The file must be readable by the OpenClaw
-process/channel sender, not merely by the clawvoice worker container.
+Copy the returned `reply` verbatim into the final answer as plain text. Put any
+extra explanation before it. The helper resolves the original master, verifies
+its checksum and readability, deduplicates identical bytes, and places exports
+in the host agent's managed media library. Each described file has a standalone
+`MEDIA:` line in the final block. Do not wrap it in backticks, quotes, bullets,
+a table, a Markdown link, or a code fence. Put nothing after that block.
 
-Audio support varies by channel. If `openclaw message send` reports that audio
-cannot be attached, tell the owner plainly and give the local artifact path plus:
+Those directives become OpenClaw media payloads and may be stripped from the
+visible transcript. Check the media payload or actual audio player before
+concluding that an attachment failed. A prose description without a directive
+is not delivery. The helper's receipt is the presentation specification; avoid
+re-litigating the format across turns.
+
+The optional private player is built into the voice service. It shows the
+original audio, duration, requested wording, transcription agreement or
+differences, and owner listening decisions. It uses a scoped link, not the
+share tray. Draft links expire with their audio; links for retained masters do
+not expire automatically and can be revoked. Keep link fragments private.
+
+After the owner chooses an original:
 
 ```sh
-clawvoice artifacts fetch <artifact-id> --output ./greeting.wav --json
+clawvoice artifacts keep <master-id> --name "Production greeting" --approved --json
+clawvoice assets list --json
 ```
 
-Do not fall back to another person's chat, upload to a public URL, publish to
-Twilio, or call any voice service. Do not claim delivery succeeded unless the
-send command returns success. For phone greetings, also state that carrier
-compatibility is not verified until tested.
+This keeps the service original and managed export without automatic expiry.
+Run `deliver <master-id> --player --json` again to hand over the retained
+asset and its new durable review link. An earlier draft link keeps its original
+expiry; retaining audio does not silently extend that old credential.
+Draft artifacts expire after seven days. Service cleanup runs at startup and
+hourly; doctor exposes the last run. The host's managed export cache has daily
+maintenance installed by `clawvoice library schedule --apply`. It removes only
+expired checksum-named exports, preserves retained assets, and leaves arbitrary
+workspace files alone. Never delete old handoff paths or real takes as part of
+a comparison without an explicit owner instruction.
 
-## Do not
-
-- Send the enrollment link or service token to a group.
-- Attach the raw enrollment recording to a third party.
-- Use OpenClaw's built-in `tts`, Talk mode, or a voice-call provider as if this
-  skill installed it. Those are separate provider integrations.
-- Post the artifact to a web service or object store.
+Deliver only to the owner in the requesting conversation. Do not publish audio,
+send it to a third party, change Twilio, or substitute built-in TTS. A raw share
+URL is not a player, and the share tray's network policy does not describe
+webchat's attachment support.

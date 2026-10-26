@@ -31,3 +31,15 @@ Common conditions:
 Never print service tokens, enrollment tokens, raw text, or raw recordings in
 error reports. The API is designed to return safe messages; trust those rather
 than dumping internal logs.
+
+## Workflow checks
+
+- Read doctor `assessment`: a ready real service worker does not require local
+  Torch or weights in the host client. Do not install ML packages to quiet a
+  client-only probe.
+- Used/expired recorder credentials need a fresh session. Updating a voice uses
+  `enroll start --voice`; `--name` starts a new profile with an editable default.
+- An ASR difference is a review flag, not certain proof of TTS error. Do not
+  hide a changed article or missing ending, and do not claim listening happened.
+- Deliver only master IDs through the receipt helper. A derivative is resolved
+  to its original; a private review will not relabel a derivative as an original.

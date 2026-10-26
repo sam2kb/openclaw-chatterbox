@@ -1,75 +1,38 @@
-# Create a voice
+# Create or update a saved voice
 
-A browser records the owner's microphone; the server cannot open the owner's
-microphone directly. The owner opens a short-lived, single-enrollment link in a
-secure context. There is no host audio-device access for you.
+1. Run `clawvoice voices list --json` and resolve the requested name or ID.
+2. For a new voice use `clawvoice enroll start --name "My voice" --json`.
+   The name is an editable suggestion on the recorder page. Report the final
+   saved name and ID, not the link's original default.
+3. To update an existing voice from the microphone or a browser upload, use
+   `clawvoice enroll start --voice <voice-id> --json`. The page binds the update
+   to that ID, keeps the name and old reference versions, and creates no extra
+   profile. A direct local file can use `voices revise <id> --audio <path>
+   --authorized --json`.
+4. Give `recorder_url` only to the owner. It is single-use and normally expires
+   after about 30 minutes. A used or expired link needs a fresh session; do not
+   try to recover a credential from browser history. Browser refresh removes
+   the fragment credential, so use a fresh link if needed.
 
-## 1. Check readiness and existing profiles
+The webchat composer mic performs Talk/dictation. It does not create an
+uploadable voice note. The recorder link captures the browser microphone and
+also accepts an audio file. No host microphone-device access is needed.
 
-```sh
-clawvoice doctor --json
-clawvoice voices list --json
-```
+For an attachment, resolve its existing agent-readable media path. Use
+`voices create --name <name> --audio <path> --authorized --json` for a new
+profile, or `voices revise` for an existing one. Do not pass `--authorized`
+unless the owner owns the voice or has permission; a clear earlier statement
+is enough.
 
-If readiness is `model_missing`, `worker_offline`, or the backend is `fake`, stop
-with the actionable reason from doctor. Do not create a profile against an
-unready service.
+Recommend 10-15 seconds of one speaker with a quiet background. The clip must
+be longer than 5 seconds and no longer than 20 seconds. The UI previews and
+selects a segment; the original upload is retained. The model uses a mono
+reference, so stereo input is downmixed. Noise is not removed automatically,
+clipping can affect quality, and speaker identity is not verified. Surface
+relevant `voice.warnings` instead of burying them in JSON.
 
-## 2. Create the enrollment link
-
-```sh
-clawvoice enroll start --name "<owner-approved name>" --json
-```
-
-Return `recorder_url` to the owner in a private conversation. It contains a
-one-enrollment credential in the URL fragment. Do not paste that URL into logs,
-issue trackers, shared channels, or summaries. Tell the owner:
-
-- Open the link on the machine/browser that can reach the service.
-- Allow microphone access only after clicking **Record sample**, or choose
-  **Upload sample**.
-- Aim for 10–15 seconds of one speaker, select the reference clip, listen, and
-  create the voice.
-
-The session expires in about 30 minutes and can create one voice. If it expires,
-start a new one.
-
-## 3. After the owner says the voice is saved
-
-```sh
-clawvoice voices list --json
-clawvoice voices show <voice-id> --json
-```
-
-Use the new voice ID, or ask the owner which saved name is theirs. The profile
-is reference-conditioned: the **original** upload and a normalized mono
-reference are stored; no model weights changed.
-
-If `last_audition.status` is `succeeded`, fetch the audition artifact with
-`clawvoice artifacts fetch <artifact-id> --output <path> --json` and attach it
-per `delivery.md`. If it is still running, poll with bounded backoff. If it
-failed, report its safe error message and the doctor readiness status; do not
-pretend the voice was auditioned.
-
-## 4. Voice selection
-
-Only select a default when the owner asks:
-
-```sh
-clawvoice voices select <voice-id> --json
-```
-
-## Sample handling notes
-
-- The server probes content, not filename or MIME type. It supports whatever the
-  installed FFmpeg decoder supports, including common WAV/MP3/WebM/Opus/MP4/AAC
-  browser outputs.
-- The selected clip must be longer than 5 seconds and no longer than the pinned
-  backend's 20-second bound. 10–15 seconds is recommended.
-- The service flags silence, possible clipping, and unsuitable duration. It does
-  not verify speaker identity and does not automatically denoise.
-- If the owner uploads a long file, the UI asks them to select a segment; do not
-  assume the whole file conditions the voice.
-- If the owner sends a channel attachment, first resolve it to a path the agent
-  can read, then use `clawvoice voices create --audio <path> --authorized`. Do
-  not echo a local service-container path.
+After saving, check the final profile and audition job. A queued job is not a
+completed preview. Fetch/deliver the audition with the standard delivery
+helper, or report its safe error. Do not select a default voice unless asked.
+Archive stale profiles reversibly when requested; do not delete recordings to
+resolve duplicate names.

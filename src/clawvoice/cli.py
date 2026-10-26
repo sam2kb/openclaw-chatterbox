@@ -236,7 +236,7 @@ def command_enroll(args: argparse.Namespace) -> int:
     client = _client(args)
     if args.enroll_command != "start":
         raise ConfigurationError("unknown enroll command")
-    result = client.create_enrollment(args.name)
+    result = client.create_enrollment(args.name, voice_id=args.voice)
     _emit(
         result,
         args,
@@ -270,6 +270,7 @@ def command_voices(args: argparse.Namespace) -> int:
             f"Audition job: {result['audition_job']['id']}\n"
             "This used the recording as conditioning; model weights were not trained."
         )
+        human += "\n" + "\n".join("Warning: " + w["message"] for w in voice.get("warnings", []))
         _emit(result, args, human)
         return EXIT_OK
     if args.voices_command == "revise":
@@ -293,7 +294,7 @@ def command_voices(args: argparse.Namespace) -> int:
         )
         return EXIT_OK
     if args.voices_command == "list":
-        result = client.list_voices()
+        result = client.list_voices(include_archived=args.all)
         human = (
             "\n".join(
                 f"{v['id']}  {v['name']}  {v['reference']['duration_ms']} ms"
@@ -303,6 +304,10 @@ def command_voices(args: argparse.Namespace) -> int:
             or "No voices yet."
         )
         _emit(result, args, human)
+        return EXIT_OK
+    if args.voices_command in ("archive", "restore"):
+        result = client._json("POST", f"/api/v1/voices/{args.voice_id}/{args.voices_command}", body={})
+        _emit(result, args, f"Voice {result['id']}: {result['status']}. Recordings and audio retained.")
         return EXIT_OK
     if args.voices_command == "show":
         result = client.show_voice(args.voice_id)
@@ -386,8 +391,44 @@ def command_jobs(args: argparse.Namespace) -> int:
     raise ConfigurationError("unknown jobs command")
 
 
+def command_assets(args: argparse.Namespace) -> int:
+    if args.command == "reviews":
+        result = _client(args)._json("DELETE", f"/api/v1/reviews/{args.review_id}")
+        _emit(result, args, "Private review link revoked.")
+        return EXIT_OK
+    result = _client(args)._json("GET", "/api/v1/assets")
+    human = "\n".join(f"{a['id']}  {a['manifest']['asset']['name']}  {a['duration_ms'] / 1000:.2f}s" for a in result["assets"]) or "No retained production assets yet."
+    _emit(result, args, human)
+    return EXIT_OK
+
+
+def command_delivery(args: argparse.Namespace) -> int:
+    from .workflow import cleanup_library, deliver, schedule_library_cleanup
+    if args.command == "library":
+        result = schedule_library_cleanup(apply=args.apply) if args.library_command == "schedule" else cleanup_library(dry_run=args.dry_run)
+        _emit(result, args, json.dumps(result))
+    else:
+        result = deliver(_client(args), args.artifact_ids, player=args.player)
+        _emit(result, args, result["reply"])
+    return EXIT_OK
+
+
 def command_artifacts(args: argparse.Namespace) -> int:
     client = _client(args)
+    if args.artifacts_command == "verify":
+        from .workflow import verify_artifact
+        result = verify_artifact(client, args.artifact_id, transcript_file=args.transcript_file, language=args.language)
+        _emit(result, args, json.dumps(result["manifest"]["quality"], indent=2))
+        return EXIT_OK
+    if args.artifacts_command == "keep":
+        artifact = client.get_artifact(args.artifact_id)
+        result = client._json("POST", f"/api/v1/artifacts/{args.artifact_id}/retain", body={
+            "name": args.name, "audio_sha256": artifact["sha256"], "owner_approved": args.approved,
+        })
+        from .workflow import export_master
+        export_master(client, result)
+        _emit(result, args, f"Retained original {result['id']} without automatic expiry.")
+        return EXIT_OK
     if args.artifacts_command == "fetch":
         result = client.fetch_artifact(args.artifact_id, args.output, force=args.force)
         _emit(
@@ -609,7 +650,9 @@ def build_parser() -> argparse.ArgumentParser:
     enroll = sub.add_parser("enroll", help="create a single-use browser enrollment session")
     enroll_sub = enroll.add_subparsers(dest="enroll_command", required=True)
     enroll_start = common(enroll_sub.add_parser("start"))
-    enroll_start.add_argument("--name", required=True)
+    enrollment_target = enroll_start.add_mutually_exclusive_group(required=True)
+    enrollment_target.add_argument("--name", help="editable default name for a new voice")
+    enrollment_target.add_argument("--voice", help="existing voice ID: replace its reference in place")
     enroll_start.set_defaults(func=command_enroll)
 
     voices = sub.add_parser("voices", help="manage named voices")
@@ -623,7 +666,13 @@ def build_parser() -> argparse.ArgumentParser:
     create.set_defaults(func=command_voices)
     for name in ("list",):
         p = common(voices_sub.add_parser(name))
+        p.add_argument("--all", action="store_true", help="include archived profiles")
         p.set_defaults(func=command_voices)
+    for state_action in ("archive", "restore"):
+        p = common(voices_sub.add_parser(state_action))
+        p.add_argument("voice_id")
+        p.set_defaults(func=command_voices)
+
     revise = common(voices_sub.add_parser("revise"))
     revise.add_argument("voice_id")
     revise.add_argument("--audio", type=Path, required=True)
@@ -652,7 +701,7 @@ def build_parser() -> argparse.ArgumentParser:
     def add_render_args(p: argparse.ArgumentParser) -> None:
         p.add_argument("--voice", help="voice ID; omit to use the selected default")
         p.add_argument(
-            "--preset", choices=["master", "mp3", "telephony", "telephony-mulaw"], default="master"
+            "--preset", choices=["master"], default="master"
         )
         p.add_argument("--temperature", type=float)
         p.add_argument("--top-p", type=float)
@@ -693,6 +742,39 @@ def build_parser() -> argparse.ArgumentParser:
     show_art = common(artifacts_sub.add_parser("show"))
     show_art.add_argument("artifact_id")
     show_art.set_defaults(func=command_artifacts)
+    verify_art = common(artifacts_sub.add_parser("verify", help="ASR check of the exact original master; listening remains required"))
+    verify_art.add_argument("artifact_id")
+    verify_art.add_argument("--transcript-file", type=Path)
+    verify_art.add_argument("--language", default="en")
+    verify_art.set_defaults(func=command_artifacts)
+    keep_art = common(artifacts_sub.add_parser("keep", help="retain a production master without expiry"))
+    keep_art.add_argument("artifact_id")
+    keep_art.add_argument("--name", required=True)
+    keep_art.add_argument("--approved", action="store_true", help="only after the owner accepted this exact take")
+    keep_art.set_defaults(func=command_artifacts)
+    reviews = sub.add_parser("reviews", help="revoke a private player link")
+    reviews_sub = reviews.add_subparsers(dest="reviews_command", required=True)
+    revoke_review = common(reviews_sub.add_parser("revoke"))
+    revoke_review.add_argument("review_id")
+    revoke_review.set_defaults(func=command_assets)
+    assets = sub.add_parser("assets", help="list retained original production assets")
+    assets_sub = assets.add_subparsers(dest="assets_command", required=True)
+    assets_list = common(assets_sub.add_parser("list"))
+    assets_list.set_defaults(func=command_assets)
+    delivery = common(sub.add_parser("deliver", help="fetch original masters and emit a complete MEDIA reply"))
+    delivery.add_argument("artifact_ids", nargs="+")
+    delivery.add_argument("--player", action="store_true", help="include a private multi-take player")
+    delivery.set_defaults(func=command_delivery)
+    library = sub.add_parser("library", help="maintain only the managed audio export cache")
+    library_sub = library.add_subparsers(dest="library_command", required=True)
+    library_cleanup = common(library_sub.add_parser("cleanup"))
+    library_cleanup.add_argument("--dry-run", action="store_true")
+    library_cleanup.set_defaults(func=command_delivery)
+    library_schedule = common(library_sub.add_parser("schedule", help="plan/install daily host-user export-cache maintenance"))
+    library_schedule.add_argument("--apply", action="store_true")
+    library_schedule.set_defaults(func=command_delivery)
+
+
 
     openapi = common(sub.add_parser("openapi", help="write the versioned OpenAPI schema"))
     openapi.add_argument("--output", type=Path, default=Path("docs/api/openapi.json"))

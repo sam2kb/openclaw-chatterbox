@@ -108,3 +108,17 @@ it does not maintain two full installers.
 Installing the service does not install the skill or alter OpenClaw. See
 `openclaw-integration.md` for the integration instructions. The supported caller is the authorized host `main` agent, not the
 offline `coder` container. The installer stages only the dedicated skill; the client uses its default protected token path.
+
+## Host verification and export maintenance
+
+The ASR workflow uses the existing `/usr/local/bin/openclaw-transcribe` helper.
+It stages and removes only its own private directory beneath `/srv/inbox`;
+the helper's approved roots are unchanged. No ASR model is added to the voice
+worker image. If that optional helper is unavailable, audio stays unverified.
+
+As the authorized host agent user, run `clawvoice library schedule --apply`.
+This installs only `clawvoice-cache-cleanup.service` and its daily user timer.
+It removes expired managed exports, keeps retained masters, and does not scan
+or delete arbitrary workspace audio. The API's separate hourly cleanup already
+handles service artifacts. No Gateway restart or new development-harness access
+is needed.

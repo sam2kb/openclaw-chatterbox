@@ -220,8 +220,9 @@ class Client:
     def capabilities(self) -> dict[str, Any]:
         return self._json("GET", "/api/v1/capabilities")
 
-    def create_enrollment(self, name: str) -> dict[str, Any]:
-        return self._json("POST", "/api/v1/enrollment-sessions", body={"name": name})
+    def create_enrollment(self, name: str | None = None, *, voice_id: str | None = None) -> dict[str, Any]:
+        body = {"voice_id": voice_id} if voice_id else {"name": name}
+        return self._json("POST", "/api/v1/enrollment-sessions", body=body)
 
     def get_enrollment(self, session_id: str, token: str) -> dict[str, Any]:
         return self._json("GET", f"/api/v1/enrollment-sessions/{session_id}", auth=token)
@@ -275,8 +276,8 @@ class Client:
         )
         return json.loads(raw.decode("utf-8"))
 
-    def list_voices(self) -> dict[str, Any]:
-        return self._json("GET", "/api/v1/voices")
+    def list_voices(self, *, include_archived: bool = False) -> dict[str, Any]:
+        return self._json("GET", "/api/v1/voices" + ("?include_archived=true" if include_archived else ""))
 
     def show_voice(self, voice_id: str) -> dict[str, Any]:
         return self._json("GET", f"/api/v1/voices/{voice_id}")

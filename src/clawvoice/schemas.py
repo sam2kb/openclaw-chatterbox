@@ -12,7 +12,14 @@ class StrictModel(BaseModel):
 
 
 class EnrollmentSessionRequest(StrictModel):
-    name: str = Field(min_length=1, max_length=80)
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    voice_id: str | None = Field(default=None, min_length=6, max_length=64)
+
+    @model_validator(mode="after")
+    def one_target(self):
+        if (self.name is None) == (self.voice_id is None):
+            raise ValueError("provide a name for a new voice or a voice_id to replace its reference")
+        return self
 
 
 class EnrollmentVoiceRequest(StrictModel):

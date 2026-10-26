@@ -3,26 +3,27 @@
     "python": "python:3.11.16-slim-bookworm@sha256:4b4c524dc3dce996864e030c7bd9c6b0e517597189fee48f48e05b499442444b",
     "uv": "ghcr.io/astral-sh/uv:0.12.17@sha256:1194b357d63b7bea6c121d8eef5d08d29c26ffbcfc64ec5ebcefd642ea759edb"
   },
-  "created_at": "2026-10-26T05:23:51.684479+00:00",
+  "created_at": "2026-10-26T16:44:17.986036+00:00",
   "data": {
     "generated_audio_in_bundle": false,
     "recordings_in_bundle": false,
     "secrets_in_bundle": false,
     "weights_in_bundle": false
   },
+  "data_schema_version": 3,
   "images": {
     "api": {
       "built": true,
-      "local_image_id": "sha256:9e8f1e082093405cc7e5326ea638e162b78add202cda5b9080ef7619573dccd6",
+      "local_image_id": "sha256:78e3ee1b97fbaa9de854ff2849adc6b5c2511136d0ff851475382d395d57e7b5",
       "smoke_tested": true,
-      "tag": "openclaw-chatterbox-api:0.1.1",
+      "tag": "openclaw-chatterbox-api:0.2.0",
       "target_verified": true
     },
     "worker": {
       "built": true,
-      "local_image_id": "sha256:e34dc37cc6d320d2fed886ae56a702515fcfb0cb8640d0dc974fb9d3abb60884",
+      "local_image_id": "sha256:56667f106af664358ca34e4b373e6dfc7ef95c21ce9ec9781e9169a5d680553e",
       "smoke_tested": true,
-      "tag": "openclaw-chatterbox-worker:0.1.1",
+      "tag": "openclaw-chatterbox-worker:0.2.0",
       "target_verified": true
     }
   },
@@ -33,12 +34,12 @@
     "project": "Apache-2.0"
   },
   "project": "openclaw-chatterbox",
-  "release": "0.1.1",
+  "release": "0.2.0",
   "runtime": {
     "index": "https://download.pytorch.org/whl/cu124",
     "python": "3.11",
     "target_gpu_capability": "6.1",
-    "target_support_verified": false,
+    "target_support_verified": true,
     "torch": "2.6.0+cu124",
     "torchaudio": "2.6.0+cu124"
   },
@@ -51,13 +52,11 @@
   },
   "status": "release-candidate",
   "unverified_gates": [
-    "owner listening and two-profile speaker-similarity review",
-    "telephony consumer playback and carrier compatibility",
-    "owner messaging-channel audio attachment delivery",
-    "live cross-version upgrade/rollback (same-version bundle lifecycle verified)"
+    "owner listening and speaker similarity for personal references",
+    "delivery on the owner's actual messaging channel (native media payload extraction verified)"
   ],
   "wheel": {
-    "filename": "clawvoice-0.1.1-py3-none-any.whl",
-    "sha256": "824b9344981b1d9f264ffe3093a8dd14548aaa2c10d3281bed5cd3893c43ca02"
+    "filename": "clawvoice-0.2.0-py3-none-any.whl",
+    "sha256": "25ca925adc816ecb7403de80ac1c6daa66c3f49c82c44c68976f8cad0093bef4"
   }
 }

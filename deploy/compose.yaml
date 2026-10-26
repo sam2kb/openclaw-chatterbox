@@ -16,7 +16,7 @@ x-service-common: &service-common
 services:
   api:
     <<: *service-common
-    image: openclaw-chatterbox-api:${CLAWVOICE_RELEASE:-0.1.1}
+    image: openclaw-chatterbox-api:${CLAWVOICE_RELEASE:-0.2.0}
     build:
       context: ..
       dockerfile: deploy/Dockerfile
@@ -52,7 +52,7 @@ services:
 
   worker:
     <<: *service-common
-    image: openclaw-chatterbox-worker:${CLAWVOICE_RELEASE:-0.1.1}
+    image: openclaw-chatterbox-worker:${CLAWVOICE_RELEASE:-0.2.0}
     build:
       context: ..
       dockerfile: deploy/Dockerfile
@@ -89,7 +89,7 @@ services:
     # Tooling only: root is needed to write the operator-owned model bind mount.
     # This service is never part of the runtime/API/worker path.
     user: "0:0"
-    image: openclaw-chatterbox-worker:${CLAWVOICE_RELEASE:-0.1.1}
+    image: openclaw-chatterbox-worker:${CLAWVOICE_RELEASE:-0.2.0}
     build:
       context: ..
       dockerfile: deploy/Dockerfile

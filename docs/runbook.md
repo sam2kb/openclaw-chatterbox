@@ -68,6 +68,36 @@ the previous service. It records the new release only after both steps succeed.
 The recorded model mount, env file, and device mode persist across release
 folders. A model revision change requires a separate compatibility check.
 
+## Snapshot before a schema upgrade
+
+Keep production releases in immutable folders. The host client can have its
+own venv inside that release and a stable executable link; updating a Git
+checkout must not change the running client's imports.
+
+When running the new installer directly from an extracted bundle, put
+`--installation-root /path/to/existing-installation` before the subcommand. This
+uses the installation's existing private state/backups without replacing its
+source or client before activation.
+
+Use the new installer with the retained immutable bundle for the active release:
+
+```sh
+deploy/clawbox snapshot --apply \
+  --previous-release /path/to/active-release-bundle --json
+```
+
+This stops only the dedicated voice project, checks SQLite integrity, archives
+its data volume into a private `deploy/backups` directory, records its SHA-256
+and schema, and restarts the same release. The archive contains private audio
+and the service credential; keep it out of Git and unprotected storage.
+
+For a schema change, pass its `manifest.json` with `--data-backup` to upgrade.
+Also supply `--previous-release` when the source checkout has been replaced;
+it must name the immutable bundle matching the recorded active version.
+A failed schema-changing activation does not launch an older binary against
+newer data or restore a snapshot over unknown subsequent writes. Retained
+snapshots support a deliberate matching-state recovery.
+
 ## Rollback
 
 ```sh
@@ -76,7 +106,8 @@ deploy/clawbox rollback --apply \
   --backup deploy/backups/<id>/skill --json
 ```
 
-Starts the previous release, waits for readiness, then restores the retained
+A database-schema downgrade is refused before touching the current service.
+For compatible schemas it starts the previous release, waits for readiness, then restores the retained
 skill under `deploy/backups`. If the prior service cannot become ready, it
 attempts to restore the current release. The data volume is untouched. It records the rollback only after readiness succeeds. Model files
 and driver state are not changed. Backups outside `deploy/backups` are refused.

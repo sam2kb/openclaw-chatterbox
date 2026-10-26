@@ -1,82 +1,95 @@
 ---
 name: chatterbox-voice
-description: Use an audio file or microphone recording as a saved voice, then turn supplied text into an audio file. Handles requests to train or clone a voice with Chatterbox.
+description: Record or upload a voice sample, update an existing voice, generate original-quality speech, check its wording, retain approved takes, and deliver playable audio attachments.
 metadata:
-  {
-    "openclaw": {
-      "emoji": "🎙️",
-      "os": ["linux"],
-      "requires": { "bins": ["clawvoice"] }
-    }
-  }
+  {"openclaw": {"emoji": "🎙️", "os": ["linux"], "requires": {"bins": ["clawvoice"]}}}
 ---
 
 # Chatterbox Voice
 
-Use this skill when the owner asks to create a voice, record or upload a voice
-sample, generate speech, or build a phone greeting from a named voice.
+This is the canonical voice workflow. Use the installed client and references
+here; avoid maintaining a second learned recipe for the same service.
 
-## Conversation workflow
+## Check the service
 
-- If the owner says "train my voice" or "use this voice", treat that as creating
-  a saved reference voice. Explain reference conditioning briefly; do not require
-  the owner to learn CLI commands.
-- For an attached audio file, use its existing local media path with
-  `clawvoice voices create --name <name> --audio <path> --authorized --json`
-  after the owner confirms they own the voice or have permission. Keep the
-  original file private. Report the saved voice name and audition result.
-- For a microphone recording, run `clawvoice enroll start --name <name> --json`
-  and give the owner the returned private HTTPS link. That page also accepts an
-  uploaded file. Never ask the owner to paste the service credential.
-- When text is supplied, save the exact text to a private UTF-8 file, select the
-  requested saved voice (or the default), render it, wait for the job, and fetch
-  the audio to an agent-accessible path. Return that audio file to the owner.
-- Reuse a saved voice by name or ID. If several voices match, clarify the choice.
-  Ask for missing text or a voice sample only when it is needed to proceed.
+Run `clawvoice doctor --json`. Continue when `assessment.status` is `ready`
+and `assessment.real_model` is true. Service worker readiness is authoritative;
+the lightweight client does not need local Torch or model weights. Never use a
+fake backend for owner audio or claim that its tone proves voice quality.
 
-## Start every run
+## Record, upload, or update a voice
 
-1. Run `clawvoice doctor --json`. Continue only if the service is reachable and
-   `service.ready.status` is `ready`, and the worker reports a real model
-   (`service.ready.checks.worker.real_model`). The local `torch`/`model.ok`
-   fields describe the machine running the client, not necessarily the host
-   worker; for a sandboxed/remote caller trust the service readiness response.
-   A fake backend is for tests only; say so and stop.
-2. Use the CLI's `--json` output. Do not print the service token or an
-   enrollment URL fragment into logs, shell history, or a group chat.
-3. Decide the mode:
-   - **Create voice** when a named profile is missing: read
-     `{baseDir}/references/enrollment.md`.
-   - **Generate speech** when the owner gave a voice (or a default exists):
-     read `{baseDir}/references/generation.md`.
-   - For failures and exit codes: `{baseDir}/references/errors.md`.
-   - For delivery: `{baseDir}/references/delivery.md`.
-   - If the agent runs in a sandbox/container, read
-     `{baseDir}/references/sandbox.md` before invoking the client; host
-     `requires.bins` does not prove sandbox reachability.
+Read `{baseDir}/references/enrollment.md`. List voices before creating one.
+Reuse an unambiguous existing voice; clarify multiple matches. A request to
+update a voice should replace that profile's reference, preserving its ID.
 
-## Hard boundaries
+The webchat mic is Talk/dictation, not an audio-file recorder. For microphone
+enrollment give the owner a private recorder link from `clawvoice enroll start`.
+An attached audio file can be used directly. Ownership or permission must be
+clear; do not repeat a consent question the owner has already answered.
 
-- Enrollment stores and conditions on a reference recording. It does **not**
-  train model weights. Never call it training or fine-tuning.
-- Never run a `train` command, invent one, or modify Twilio, place calls, send
-  messages to third parties, or publish audio. Generating audio only creates a
-  local artifact.
-- Deliver generated audio only to the owner in the conversation that asked for
-  it. Do not send a voice sample or generated voice to another person.
-- Do not claim speaker-identity verification or guaranteed voice similarity.
-- If the owner has no usable voice profile, offer enrollment. Do not substitute
-  OpenClaw's built-in TTS provider or a default Chatterbox voice.
+Enrollment conditions synthesis on a recording; it does not train model weights.
+Read and report relevant reference warnings, including mono downmix, clipping,
+noise, and the absence of speaker-identity verification.
 
-## Fast path for an existing voice
+## Generate and check
+
+Read `{baseDir}/references/generation.md`. First check `clawvoice assets list
+--json`: an approved saved asset should be delivered unchanged, without another
+synthesis. For new speech save the exact supplied text to a private UTF-8 file.
+Do not rewrite it. Use original 24 kHz WAV; do not create telephony/downsampled
+files. Produce one take unless the owner requests a batch.
+
+Each new render is stochastic. A seed does not guarantee the same bytes,
+duration, timing, or wording. Controls affect sampling and stability; accent
+comes from the reference. Sentence chunks reduce long-render drift but cannot
+guarantee correct speech.
+
+Run `clawvoice artifacts verify <master-id> --json` for a new take. It uses the
+existing local transcription helper and cleans up its own temporary inbox copy.
+The result is bound to the audio checksum. Treat `asr_agreement` as a useful
+second check. It does not prove the spoken words. A mismatch can be TTS error or
+ASR error, including articles, names, numbers, and trailing words. Do not hide
+those differences or rerender indefinitely. Offer the private player for the
+owner to listen and choose. Never claim listening or speaker similarity without
+an actual owner review.
+
+## Deliver every described take
+
+Read `{baseDir}/references/delivery.md`. Run:
 
 ```sh
-clawvoice voices list --json
-clawvoice speak --voice <voice-id> --text-file <exact-text-file> --preset master --json
-clawvoice jobs status <job-id> --json
-clawvoice artifacts fetch <artifact-id> --output <agent-accessible-path>/greeting.wav --json
+clawvoice deliver <master-id> [<master-id> ...] --player --json
 ```
 
-Send the exact owner text. Do not summarize it. For a scripted phone greeting
-with a real pause, use `render` with a segments file instead of punctuation;
-see the generation reference.
+Use the returned `reply` as the final reply, verbatim and outside a code fence.
+It includes short labels, a private player link, and standalone `MEDIA:` lines
+at the end. Add any necessary explanation before that block. Do not replace the
+lines with Markdown links, a table, prose, or a claim that files are attached.
+Every take described must have a corresponding real, readable media file.
+
+The visible transcript may omit `MEDIA:` directives after OpenClaw extracts the
+attachments. This is not evidence that delivery failed. Check returned media
+payloads or the actual player. Do not infer that webchat cannot attach files
+from share-tray documentation.
+
+## Keep an approved original
+
+After the owner chooses a take, use `clawvoice artifacts keep <master-id>
+--name <asset-name> --approved --json`. Pass `--approved` only for that exact
+owner-accepted file. The master keeps its checksum, has no automatic expiry,
+and is discoverable with `assets list`. Never regenerate a production asset to
+make a different format or retrieve it again. A retained but unreviewed draft
+can omit `--approved`; describe it honestly.
+
+Use `voices archive <id>` to hide an unwanted profile reversibly. `voices list
+--all` includes archived profiles; `voices restore <id>` restores them. Do not
+delete existing profiles or audio merely to tidy the list.
+
+## Boundaries
+
+Keep recordings, text, service credentials, and scoped link fragments private.
+Deliver only to the owner in the requesting conversation. No third-party
+messages, public uploads, calls, Twilio changes, built-in TTS substitution, or
+new runtime access for the development harness. See `references/sandbox.md`
+when the caller is contained. Do not weaken transcription read-root checks.

@@ -728,6 +728,7 @@ def apply_install(args: argparse.Namespace) -> int:
             "release_root": str(ROOT),
             "model_dir": str(host_model_dir(args)),
             "env_file": str(Path(args.env_file).expanduser().resolve()) if args.env_file else None,
+            "data_schema_version": data_schema(load_manifest()),
             "installed_at": datetime.now(UTC).isoformat(),
         }
     )
@@ -801,6 +802,141 @@ def apply_verify(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def data_schema(manifest: dict[str, Any]) -> int:
+    return int(manifest.get("data_schema_version", 2))
+
+
+def validate_data_backup(path: Path, expected_schema: int) -> dict[str, Any]:
+    path = path.expanduser().resolve()
+    try:
+        path.relative_to(BACKUPS.resolve())
+    except ValueError:
+        raise SystemExit(
+            "data backup must be in this installer's private deploy/backups directory"
+        ) from None
+    if path.name != "manifest.json" or not path.is_file():
+        raise SystemExit("provide the verified snapshot manifest.json")
+    metadata = json.loads(path.read_text())
+    archive = path.parent / "data.tar.gz"
+    if not metadata.get("consistent") or metadata.get("sqlite_quick_check") != "ok":
+        raise SystemExit("data snapshot was not verified")
+    if metadata.get("data_schema_version") != expected_schema:
+        raise SystemExit("data snapshot schema does not match the previous release")
+    if metadata.get("volume") != "openclaw-chatterbox_clawvoice-data":
+        raise SystemExit("snapshot belongs to another data volume")
+    if not archive.is_file() or archive.is_symlink():
+        raise SystemExit("snapshot archive is unavailable")
+    digest = hashlib.sha256()
+    with archive.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    if digest.hexdigest() != metadata.get("sha256"):
+        raise SystemExit("data snapshot checksum mismatch")
+    return {**metadata, "manifest": str(path)}
+
+
+def apply_snapshot(args: argparse.Namespace) -> int:
+    require_apply(args)
+    state = load_release_state()
+    if not state.get("release"):
+        raise SystemExit("no installed release is recorded")
+    args = operation_args(args, state)
+    root = Path(
+        getattr(args, "previous_release", None) or state.get("release_root", ROOT)
+    ).resolve()
+    manifest = json.loads((root / "deploy/release-manifest.json").read_text())
+    if manifest["release"] != state["release"]:
+        raise SystemExit("use --previous-release with the immutable active release bundle")
+    health = run(
+        compose_command(args, "exec", "-T", "api", "clawvoice", "doctor", "--json", root=root),
+        timeout=60,
+        env_overrides=release_env(state["release"], host_model_dir(args)),
+    )
+    if health.get("returncode") == 0:
+        report = json.loads(health["stdout"])
+        queue = report.get("service", {}).get("ready", {}).get("checks", {}).get("queue", {})
+        if queue.get("depth", 0):
+            raise SystemExit(
+                "wait for queued/running voice jobs before taking a quiescent data snapshot"
+            )
+    destination = backup_root() / "data"
+    destination.mkdir(mode=0o700)
+    command = compose_command(args, "stop", root=root)
+    stopped = run(
+        command, timeout=180, env_overrides=release_env(state["release"], host_model_dir(args))
+    )
+    if stopped.get("returncode") != 0:
+        start_release(args, root, state["release"])
+        raise SystemExit("could not stop the dedicated project for a consistent snapshot")
+    payload = None
+    try:
+        script = r"""
+import hashlib,json,os,sqlite3,tarfile,tempfile
+from pathlib import Path
+from datetime import datetime,timezone
+base=Path('/data'); target=Path('/backup'); archive=target/'data.tar.gz'
+with tarfile.open(archive,'w:gz') as tar:tar.add(base,arcname='.')
+# SQLite may need to rebuild SHM even for a readonly connection. Validate only
+# a private writable extraction; the quiesced live volume stays readonly.
+with tempfile.TemporaryDirectory(prefix='verify-',dir=target) as temp:
+ with tarfile.open(archive,'r:gz') as tar:
+  for name in ('clawvoice.sqlite3','clawvoice.sqlite3-wal','clawvoice.sqlite3-shm'):
+   try:member=tar.getmember('./'+name)
+   except KeyError:continue
+   assert member.isfile()
+   with tar.extractfile(member) as f:(Path(temp)/name).write_bytes(f.read())
+ c=sqlite3.connect(str(Path(temp)/'clawvoice.sqlite3'))
+ assert c.execute('PRAGMA quick_check').fetchone()[0]=='ok'
+ schema=c.execute('PRAGMA user_version').fetchone()[0];c.close()
+digest=hashlib.sha256()
+with archive.open('rb') as f:
+ for chunk in iter(lambda:f.read(1024*1024),b''):digest.update(chunk)
+metadata={'consistent':True,'sqlite_quick_check':'ok','data_schema_version':schema,'sha256':digest.hexdigest(),'volume':'openclaw-chatterbox_clawvoice-data','created_at':datetime.now(timezone.utc).isoformat()}
+p=target/'manifest.json';p.write_text(json.dumps(metadata,indent=2));os.chmod(p,0o600);os.chmod(archive,0o600)
+"""
+        image = manifest["images"]["api"]["tag"]
+        result = run(
+            [
+                which("docker"),
+                "run",
+                "--rm",
+                "--user",
+                "0:0",
+                "--network",
+                "none",
+                "--read-only",
+                "--mount",
+                "type=volume,src=openclaw-chatterbox_clawvoice-data,dst=/data,readonly",
+                "--mount",
+                f"type=bind,src={destination},dst=/backup",
+                "--entrypoint",
+                "python",
+                image,
+                "-c",
+                script,
+            ],
+            timeout=600,
+        )
+        evidence = destination / "snapshot-result.json"
+        evidence.write_text(json.dumps(result, indent=2))
+        evidence.chmod(0o600)
+        if result.get("returncode") != 0:
+            raise SystemExit("data snapshot failed; retained evidence is private in deploy/backups")
+        payload = validate_data_backup(destination / "manifest.json", data_schema(manifest))
+    finally:
+        _, readiness = start_release(args, root, state["release"])
+        if not readiness.get("ready"):
+            raise SystemExit(
+                "snapshot finished but service restart needs attention; data was not restored or removed"
+            )
+    print(
+        json.dumps(
+            {"mode": "snapshot", "ok": True, "snapshot": payload, "service_ready": True}, indent=2
+        )
+    )
+    return 0
+
+
 def apply_upgrade(args: argparse.Namespace) -> int:
     require_apply(args)
     workspace = require_workspace(args)
@@ -832,7 +968,27 @@ def apply_upgrade(args: argparse.Namespace) -> int:
             raise SystemExit(f"{service} image is not present locally; build the new release first")
         if spec.get("local_image_id") and image_id(spec["tag"]) != spec["local_image_id"]:
             raise SystemExit(f"{service} image ID does not match the new release manifest")
-    old_root = Path(old_state.get("release_root", str(ROOT)))
+    old_root = Path(
+        getattr(args, "previous_release", None) or old_state.get("release_root", str(ROOT))
+    ).resolve()
+    old_manifest = json.loads((old_root / "deploy/release-manifest.json").read_text())
+    if old_manifest["release"] != old_state["release"]:
+        raise SystemExit(
+            "active source folder changed; supply --previous-release with its immutable release bundle"
+        )
+    old_schema = old_state.get("data_schema_version", data_schema(old_manifest))
+    new_schema = data_schema(new_manifest)
+    snapshot = None
+    if new_schema > old_schema:
+        if not getattr(args, "data_backup", None):
+            raise SystemExit(
+                "schema upgrade requires a verified snapshot; run snapshot --apply first and pass --data-backup manifest.json"
+            )
+        snapshot = validate_data_backup(Path(args.data_backup), old_schema)
+    elif new_schema < old_schema:
+        raise SystemExit(
+            "refusing a database-schema downgrade; restore matching data explicitly before selecting an older release"
+        )
     result, readiness = start_release(args, new_release, new_manifest.get("release"))
     skill_result = None
     staging_error = None
@@ -843,7 +999,18 @@ def apply_upgrade(args: argparse.Namespace) -> int:
         except Exception as exc:
             staging_error = type(exc).__name__
     if skill_result is None:
-        rollback, rollback_ready = start_release(previous_args, old_root, old_state["release"])
+        if new_schema > old_schema:
+            rollback = {
+                "skipped": True,
+                "reason": "schema migration may have written data; never overwrite unknown subsequent writes",
+            }
+            rollback_ready = {
+                "ready": False,
+                "matching_data_restore_required": True,
+                "snapshot": snapshot,
+            }
+        else:
+            rollback, rollback_ready = start_release(previous_args, old_root, old_state["release"])
         print(
             json.dumps(
                 {
@@ -868,6 +1035,9 @@ def apply_upgrade(args: argparse.Namespace) -> int:
         "cpu": bool(args.cpu),
         "release_root": str(new_release),
         "previous_root": str(old_root),
+        "data_schema_version": new_schema,
+        "previous_data_schema_version": old_schema,
+        "data_backup": snapshot,
         "model_dir": str(host_model_dir(args)),
         "env_file": str(Path(args.env_file).expanduser().resolve()) if args.env_file else None,
         "previous_settings": {k: old_state.get(k) for k in ("model_dir", "env_file", "gpu", "cpu")},
@@ -909,6 +1079,17 @@ def apply_rollback(args: argparse.Namespace) -> int:
     previous_root = Path(state.get("previous_root", str(ROOT))).expanduser()
     if not (previous_root / "deploy" / "compose.yaml").is_file():
         raise SystemExit(f"previous release root is not available: {previous_root}")
+    previous_manifest = json.loads((previous_root / "deploy/release-manifest.json").read_text())
+    if previous_manifest["release"] != previous_release:
+        raise SystemExit(
+            "previous release metadata changed; use the retained immutable bundle before rollback"
+        )
+    if state.get("data_schema_version", data_schema(previous_manifest)) > data_schema(
+        previous_manifest
+    ):
+        raise SystemExit(
+            "refusing automatic rollback across database schemas; current service is untouched and a matching verified data restore is required"
+        )
     previous_settings = state.get("previous_settings") or state
     args = operation_args(args, previous_settings)
     result, readiness = start_release(args, previous_root, previous_release)
@@ -1035,8 +1216,12 @@ def apply_uninstall(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="clawbox", description=__doc__)
+    parser.add_argument(
+        "--installation-root",
+        help="existing installation root whose private state/backups to manage",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("plan", "install", "verify", "upgrade", "rollback", "uninstall"):
+    for name in ("plan", "install", "verify", "upgrade", "rollback", "uninstall", "snapshot"):
         p = sub.add_parser(name)
         p.add_argument("--json", action="store_true")
         p.add_argument("--apply", action="store_true")
@@ -1048,8 +1233,13 @@ def build_parser() -> argparse.ArgumentParser:
         gpu_group = p.add_mutually_exclusive_group()
         gpu_group.add_argument("--gpu", action="store_true")
         gpu_group.add_argument("--cpu", action="store_true")
+        if name in ("upgrade", "snapshot"):
+            p.add_argument("--previous-release", help="immutable bundle for the installed release")
         if name == "upgrade":
             p.add_argument("--release", required=True)
+            p.add_argument(
+                "--data-backup", help="verified data snapshot manifest for a schema upgrade"
+            )
         if name == "rollback":
             p.add_argument("--backup")
         if name == "uninstall":
@@ -1060,7 +1250,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    global STATE_DIR, BACKUPS
     args = build_parser().parse_args(argv)
+    if args.installation_root:
+        installation = Path(args.installation_root).expanduser().resolve()
+        if not installation.is_dir():
+            raise SystemExit("the installation root must already exist")
+        STATE_DIR = installation / "deploy" / ".state"
+        BACKUPS = installation / "deploy" / "backups"
     try:
         if args.func == "plan":
             print(json.dumps(build_plan(args), indent=2, sort_keys=True))
@@ -1069,6 +1266,8 @@ def main(argv: list[str] | None = None) -> int:
             return apply_install(args)
         if args.func == "verify":
             return apply_verify(args)
+        if args.func == "snapshot":
+            return apply_snapshot(args)
         if args.func == "upgrade":
             return apply_upgrade(args)
         if args.func == "rollback":

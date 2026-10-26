@@ -575,8 +575,16 @@
         return;
       }
       show(ui.studio);
-      ui.sessionBadge.textContent = "active link";
+      ui.sessionBadge.textContent = `Single use · expires ${new Date(session.expires_at).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}`;
       ui.voiceName.value = session.name || "";
+      ui.voiceName.readOnly = session.mode === "revise";
+      ui.createButton.textContent = session.mode === "revise" ? "Update voice reference" : "Create voice";
+      const note = document.createElement("p");
+      note.className = "hint";
+      note.textContent = session.mode === "revise"
+        ? "This updates the selected voice. Its ID and earlier reference versions are kept."
+        : "The name below is a suggestion. You can change it before saving this new voice.";
+      ui.voiceName.after(note);
       if (session.upload) {
         resetClipSelection(session.upload);
         show(ui.clipPanel);

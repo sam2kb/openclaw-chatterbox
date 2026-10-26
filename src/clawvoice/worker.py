@@ -629,6 +629,14 @@ class InferenceWorker:
                 )
         manifest_base = {
             "schema_version": 1,
+            "quality": {
+                "wording_status": "unverified",
+                "input_hash_proves_spoken_words": False,
+                "listening_status": "not_reviewed",
+                "stochastic_take": True,
+                "seed_guarantees_bytes_or_duration": False,
+                "accent_source": "reference_recording",
+            },
             "generator": {"name": "clawvoice", "version": self.settings.service_version},
             "generated_at": iso_from_ms(now_ms()),
             "backend": backend_identity,

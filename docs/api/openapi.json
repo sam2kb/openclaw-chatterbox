@@ -1,19 +1,98 @@
 {
   "components": {
     "schemas": {
+      "AudioMetrics": {
+        "additionalProperties": false,
+        "properties": {
+          "channels": {
+            "minimum": 1.0,
+            "title": "Channels",
+            "type": "integer"
+          },
+          "clipped_fraction": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Clipped Fraction",
+            "type": "number"
+          },
+          "duration_ms": {
+            "minimum": 0.0,
+            "title": "Duration Ms",
+            "type": "integer"
+          },
+          "frames": {
+            "minimum": 0.0,
+            "title": "Frames",
+            "type": "integer"
+          },
+          "peak_dbfs": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Peak Dbfs"
+          },
+          "rms_dbfs": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rms Dbfs"
+          },
+          "sample_rate": {
+            "minimum": 1.0,
+            "title": "Sample Rate",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "frames",
+          "sample_rate",
+          "channels",
+          "duration_ms",
+          "clipped_fraction"
+        ],
+        "title": "AudioMetrics",
+        "type": "object"
+      },
       "EnrollmentSessionRequest": {
         "additionalProperties": false,
         "properties": {
           "name": {
-            "maxLength": 80,
-            "minLength": 1,
-            "title": "Name",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "voice_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 6,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Voice Id"
           }
         },
-        "required": [
-          "name"
-        ],
         "title": "EnrollmentSessionRequest",
         "type": "object"
       },
@@ -124,6 +203,30 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "ListeningRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "audio_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Audio Sha256",
+            "type": "string"
+          },
+          "decision": {
+            "enum": [
+              "accepted",
+              "rejected"
+            ],
+            "title": "Decision",
+            "type": "string"
+          }
+        },
+        "required": [
+          "audio_sha256",
+          "decision"
+        ],
+        "title": "ListeningRequest",
+        "type": "object"
+      },
       "PauseSegment": {
         "additionalProperties": false,
         "properties": {
@@ -148,6 +251,89 @@
           "pause_ms"
         ],
         "title": "PauseSegment",
+        "type": "object"
+      },
+      "QualityRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "audio_metrics": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AudioMetrics"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "audio_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Audio Sha256",
+            "type": "string"
+          },
+          "transcript": {
+            "maxLength": 100000,
+            "title": "Transcript",
+            "type": "string"
+          },
+          "verifier": {
+            "default": "owner-supplied-transcript",
+            "maxLength": 100,
+            "title": "Verifier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "audio_sha256",
+          "transcript"
+        ],
+        "title": "QualityRequest",
+        "type": "object"
+      },
+      "RetainRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "audio_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Audio Sha256",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "owner_approved": {
+            "default": false,
+            "title": "Owner Approved",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "audio_sha256"
+        ],
+        "title": "RetainRequest",
+        "type": "object"
+      },
+      "ReviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 12,
+            "minItems": 1,
+            "title": "Artifact Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "artifact_ids"
+        ],
+        "title": "ReviewRequest",
         "type": "object"
       },
       "SynthesisControls": {
@@ -381,7 +567,7 @@
   "info": {
     "description": "Local reference-conditioned voice service. All voice/audio routes require a bearer token.",
     "title": "clawvoice API",
-    "version": "0.1.1"
+    "version": "0.2.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -476,6 +662,140 @@
         "summary": "Artifact Download",
         "tags": [
           "artifacts"
+        ]
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/retain": {
+      "post": {
+        "operationId": "retain_api_v1_artifacts__artifact_id__retain_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetainRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ClawvoiceBearer": []
+          }
+        ],
+        "summary": "Retain",
+        "tags": [
+          "review"
+        ]
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/verify": {
+      "post": {
+        "operationId": "verify_api_v1_artifacts__artifact_id__verify_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QualityRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ClawvoiceBearer": []
+          }
+        ],
+        "summary": "Verify",
+        "tags": [
+          "review"
+        ]
+      }
+    },
+    "/api/v1/assets": {
+      "get": {
+        "operationId": "assets_api_v1_assets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "ClawvoiceBearer": []
+          }
+        ],
+        "summary": "Assets",
+        "tags": [
+          "review"
         ]
       }
     },
@@ -1038,6 +1358,241 @@
         ]
       }
     },
+    "/api/v1/reviews": {
+      "post": {
+        "operationId": "create_review_api_v1_reviews_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ClawvoiceBearer": []
+          }
+        ],
+        "summary": "Create Review",
+        "tags": [
+          "review"
+        ]
+      }
+    },
+    "/api/v1/reviews/{review_id}": {
+      "delete": {
+        "operationId": "revoke_review_api_v1_reviews__review_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "title": "Review Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ClawvoiceBearer": []
+          }
+        ],
+        "summary": "Revoke Review",
+        "tags": [
+          "review"
+        ]
+      },
+      "get": {
+        "operationId": "show_review_api_v1_reviews__review_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "title": "Review Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Show Review",
+        "tags": [
+          "review"
+        ]
+      }
+    },
+    "/api/v1/reviews/{review_id}/artifacts/{artifact_id}/download": {
+      "get": {
+        "operationId": "review_audio_api_v1_reviews__review_id__artifacts__artifact_id__download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "title": "Review Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Review Audio",
+        "tags": [
+          "review"
+        ]
+      }
+    },
+    "/api/v1/reviews/{review_id}/artifacts/{artifact_id}/listen": {
+      "post": {
+        "operationId": "listening_api_v1_reviews__review_id__artifacts__artifact_id__listen_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "title": "Review Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListeningRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Listening",
+        "tags": [
+          "review"
+        ]
+      }
+    },
     "/api/v1/synthesis-jobs": {
       "post": {
         "operationId": "create_synthesis_api_v1_synthesis_jobs_post",
@@ -1089,6 +1644,18 @@
     "/api/v1/voices": {
       "get": {
         "operationId": "list_voices_api_v1_voices_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "include_archived",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Archived",
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -1101,6 +1668,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "security": [
@@ -1356,6 +1933,63 @@
         ]
       }
     },
+    "/api/v1/voices/{voice_id}/archive": {
+      "post": {
+        "operationId": "archive_voice_api_v1_voices__voice_id__archive_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "voice_id",
+            "required": true,
+            "schema": {
+              "title": "Voice Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Body",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ClawvoiceBearer": []
+          }
+        ],
+        "summary": "Archive Voice",
+        "tags": [
+          "voices"
+        ]
+      }
+    },
     "/api/v1/voices/{voice_id}/preview": {
       "post": {
         "operationId": "preview_voice_api_v1_voices__voice_id__preview_post",
@@ -1491,6 +2125,63 @@
           }
         ],
         "summary": "Revise Voice Reference",
+        "tags": [
+          "voices"
+        ]
+      }
+    },
+    "/api/v1/voices/{voice_id}/restore": {
+      "post": {
+        "operationId": "restore_voice_api_v1_voices__voice_id__restore_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "voice_id",
+            "required": true,
+            "schema": {
+              "title": "Voice Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Body",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ClawvoiceBearer": []
+          }
+        ],
+        "summary": "Restore Voice",
         "tags": [
           "voices"
         ]

@@ -17,10 +17,14 @@
 - A liveness route is the only unauthenticated API response and discloses only
   service/version/status.
 - Enrollment sessions use a separate random token; only its SHA-256 hash is
-  stored. The token is scoped to one session, can create one voice, expires
-  promptly, and cannot call profile/synthesis/admin routes.
-- Browser enrollment tokens live in a URL fragment and then in memory. They are
-  stripped from the address bar on load and never written to localStorage,
+  stored. The token is scoped to one session, can create one voice or revise
+  its bound profile, expires promptly, and cannot call profile/synthesis/admin routes.
+- Review tokens are separate hashed bearer credentials, scoped to selected
+  original artifacts and listening decisions. They cannot list profiles, retain
+  assets, or call service administration. Draft links expire with the earliest
+  selected artifact; retained-only links are explicitly revocable.
+- Browser enrollment and review tokens live in a URL fragment and then in
+  memory. They are stripped from the address bar on load and never written to localStorage,
   sessionStorage, cookies, or analytics. No cookie authentication is used, so
   cookie CSRF is not applicable.
 - Service token files must be mode 0600; the CLI refuses group/other-readable
@@ -50,7 +54,7 @@
 
 - CORS uses an exact origin allowlist; wildcard origins are rejected and
   credentialed CORS is disabled.
-- The recorder page uses only same-origin assets. CSP blocks third-party script,
+- The recorder and review pages use only same-origin assets. CSP blocks third-party script,
   style, frame, and connect sources; no analytics.
 - Security headers: `X-Content-Type-Options`, `Referrer-Policy: no-referrer`,
   `X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy`, and a narrow
@@ -66,7 +70,10 @@
   retention window, cleanup redacts terminal job text; API status responses
   expose only a text hash and counts. Error messages are stable, short, and do
   not include exception internals or user text.
-- Manifest fields include text hashes, not text.
+- Input manifests record text hashes. Audio verification adds the ASR transcript.
+  Scoped reviews disclose the selected files' requested wording and transcript;
+  protect review links as credentials. Retained assets keep their request text
+  for later wording review.
 - The doctor does not print credentials or file contents; it reports model
   directories but not secret paths containing tokens.
 
@@ -84,11 +91,15 @@
 
 ## Retention and deletion
 
-- Generated artifacts default to 7 days; `clawvoice cleanup` removes expired
+- Generated artifacts default to 7 days. Startup and hourly cleanup (also
+  available as `clawvoice cleanup`) removes expired
   rows/files and clears stale preview references.
 - Saved voices and their original/normalized references persist until explicitly
   deleted. Voice deletion removes reference originals, normalized files, and all
-  generated artifacts for that voice. Uninstall without `--delete-data` keeps
+  generated artifacts for that voice. Retained production assets prevent voice
+  deletion; archive the profile to hide it while preserving those files.
+  Retained originals have no automatic expiry, and their managed exports survive
+  daily cache cleanup. Uninstall without `--delete-data` keeps
   the data volume.
 - Back up the SQLite database together with the private files for consistent
   recovery. The token is a separate secret; do not include it in ordinary

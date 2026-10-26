@@ -64,3 +64,21 @@ approved client/secret route and verify it from that sandbox separately.
 Remove or restore only the dedicated skill and its client link. Keep voice data
 and the token private. Service upgrade/rollback uses `deploy/clawbox` and retains
 the data volume. Follow `runbook.md`; do not overwrite `openclaw.json` wholesale.
+
+## Canonical workflow and media delivery
+
+Use the tracked `chatterbox-voice` skill as the one voice recipe. After merging
+its corrections, archive an overlapping learned Workshop recipe through the
+supported `openclaw skills workshop archive` command; keep its saved history.
+The application installer itself stages only the dedicated tracked bundle.
+
+For each new take, use `artifacts verify`, then `deliver <master-id> --player
+--json`. Copy the returned `reply` verbatim as plain text. Every `MEDIA:` line
+must remain in the final block. OpenClaw can remove directives from the visible
+text while returning media payloads; inspect those payloads or the actual player
+instead of concluding that webchat cannot attach files. Do not use share-tray
+network policy as evidence about chat attachment support.
+
+The owner chooses the original, then `artifacts keep --name ... --approved`
+records that choice and retains the exact checksum. Deliver again to create a
+new durable player link. Earlier draft credentials retain their expiry.

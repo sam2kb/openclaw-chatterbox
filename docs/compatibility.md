@@ -1,8 +1,8 @@
 # Compatibility and target verification
 
-Version 0.1.1 has loaded the pinned model and generated speech on the actual
+Versions 0.1.1 and 0.2.0 have loaded the pinned model and generated speech on the actual
 Clawbox GTX 1070 Ti. This establishes GPU execution for the measured stack.
-Owner listening, speaker similarity, and playback through a phone carrier
+Owner listening, speaker similarity, and playback in the owner's messaging channel
 remain unverified, so the release remains a candidate.
 
 ## Measured target, 2026-10-26
@@ -29,6 +29,18 @@ These are observations from one short run, not resource or latency guarantees.
 Synthetic-reference tests cannot establish resemblance to an owner's voice.
 The release manifest records the final image identities and remaining checks.
 
+## 0.2.0 acceptance, 2026-10-26
+
+The same pinned runtime generated two synthetic-reference original masters,
+each 2.920 seconds at 24 kHz mono. Local ASR agreed with the requested words in
+both, and signal checks found no clipping or very quiet flag. Live HTTPS browser
+checks played and downloaded both originals with matching SHA-256 checksums.
+Same-ID browser re-enrollment also produced a real CUDA audition.
+
+A fresh non-delivered OpenClaw 2026.10.7 turn loaded the canonical skill and
+extracted both master files into native media payloads. This establishes the
+attachment path through response parsing; owner-channel playback and personal
+voice similarity still require owner review. See [the release checks](release-0.2.0.md).
 ## Pins
 
 | Component | Pin |

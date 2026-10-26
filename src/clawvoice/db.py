@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS voices (
@@ -50,6 +50,7 @@ CREATE INDEX IF NOT EXISTS idx_reference_voices ON reference_versions(voice_id);
 CREATE TABLE IF NOT EXISTS enrollment_sessions (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
+    target_voice_id TEXT,
     token_hash TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'open',
     created_at INTEGER NOT NULL,
@@ -194,6 +195,9 @@ class Database:
                 }
                 if "reference_version_id" not in columns:
                     conn.execute("ALTER TABLE jobs ADD COLUMN reference_version_id TEXT")
+            columns = {r[1] for r in conn.execute("PRAGMA table_info(enrollment_sessions)")}
+            if "target_voice_id" not in columns:
+                conn.execute("ALTER TABLE enrollment_sessions ADD COLUMN target_voice_id TEXT")
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             conn.commit()
             try:

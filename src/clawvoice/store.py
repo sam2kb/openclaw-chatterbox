@@ -171,10 +171,20 @@ class Store:
         audition: dict[str, Any],
         max_queue_depth: int,
         max_attempts: int,
+        session_id: str | None = None,
+        upload_id: str | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Add a new reference version and make it current; keep old versions."""
         now = now_ms()
         with self.db.transaction(immediate=True) as conn:
+            if session_id:
+                session = conn.execute("SELECT * FROM enrollment_sessions WHERE id=?", (session_id,)).fetchone()
+                if session is None or session["target_voice_id"] != voice_id:
+                    raise ConflictError("enrollment is not bound to this voice")
+                if session["status"] != "open" or session["expires_at"] <= now:
+                    raise ConflictError("enrollment session is expired or already used")
+                if session["upload_id"] != upload_id:
+                    raise ConflictError("upload does not belong to this enrollment session")
             voice = conn.execute(
                 "SELECT * FROM voices WHERE id=? AND status='active'", (voice_id,)
             ).fetchone()
@@ -219,7 +229,7 @@ class Store:
             merged_metadata = {
                 **previous_metadata,
                 **metadata,
-                "revision_count": revision_count + 1,
+                "revision_count": revision_count,
                 "reference_revised_at": iso_from_ms(now),
             }
             conn.execute(
@@ -236,7 +246,7 @@ class Store:
                 kind="audition",
                 voice_id=voice_id,
                 reference_version_id=reference["id"],
-                session_id=None,
+                session_id=session_id,
                 preset=audition.get("preset", "master"),
                 input_payload=audition["input"],
                 controls=audition.get("controls", {}),
@@ -249,6 +259,13 @@ class Store:
                 "VALUES (?, 'voice.reference_added', ?, ?)",
                 (now, voice_id, json.dumps({"reference_id": reference["id"]})),
             )
+            if session_id:
+                conn.execute(
+                    "UPDATE enrollment_sessions SET status='completed', consumed_at=?, completed_at=?, "
+                    "voice_id=?, audition_job_id=?, upload_id=NULL, last_seen_at=? WHERE id=?",
+                    (now, now, voice_id, job["id"], now, session_id),
+                )
+                conn.execute("DELETE FROM enrollment_uploads WHERE id=?", (upload_id,))
             voice_row = conn.execute("SELECT * FROM voices WHERE id=?", (voice_id,)).fetchone()
             ref_row = conn.execute(
                 "SELECT * FROM reference_versions WHERE id=?", (reference["id"],)
@@ -256,10 +273,11 @@ class Store:
             view = self.public_voice(voice_row, ref_row)
         return view, self.public_job(job)
 
-    def list_voices(self) -> list[dict[str, Any]]:
+    def list_voices(self, *, include_archived: bool = False) -> list[dict[str, Any]]:
         with self.db.connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM voices WHERE status='active' ORDER BY created_at, id"
+                "SELECT * FROM voices WHERE status='active' OR (? AND status='archived') ORDER BY created_at, id",
+                (include_archived,)
             ).fetchall()
             result = []
             for row in rows:
@@ -382,6 +400,21 @@ class Store:
         voice["is_default"] = True
         return voice
 
+    def archive_voice(self, voice_id: str, *, restore: bool = False) -> dict[str, Any]:
+        source, target = ("archived", "active") if restore else ("active", "archived")
+        with self.db.transaction(immediate=True) as conn:
+            row = conn.execute("SELECT * FROM voices WHERE id=? AND status=?", (voice_id, source)).fetchone()
+            if row is None:
+                raise NotFoundError("voice not found in the requested state")
+            if conn.execute("SELECT COUNT(*) FROM jobs WHERE voice_id=? AND status IN ('queued','running')", (voice_id,)).fetchone()[0]:
+                raise ConflictError("wait for this voice's jobs before archiving it")
+            conn.execute("UPDATE voices SET status=?, updated_at=? WHERE id=?", (target, now_ms(), voice_id))
+            if not restore:
+                conn.execute("DELETE FROM settings WHERE key='default_voice_id' AND value=?", (voice_id,))
+            ref = conn.execute("SELECT * FROM reference_versions WHERE id=?", (row["reference_version_id"],)).fetchone()
+            view = self.public_voice({**dict(row), "status": target}, ref)
+        return view
+
     def delete_voice(self, voice_id: str) -> list[str]:
         """Delete profile metadata and return private files to unlink.
 
@@ -400,6 +433,12 @@ class Store:
             ).fetchone()[0]
             if active:
                 raise ConflictError("cannot delete a voice while it has queued or running jobs")
+            retained = conn.execute(
+                "SELECT COUNT(*) FROM artifacts WHERE expires_at IS NULL AND job_id IN "
+                "(SELECT id FROM jobs WHERE voice_id=?)", (voice_id,)
+            ).fetchone()[0]
+            if retained:
+                raise ConflictError("this voice has retained assets; archive the voice instead of deleting it")
             paths: list[str] = []
             for row in conn.execute(
                 "SELECT path FROM artifacts WHERE job_id IN (SELECT id FROM jobs WHERE voice_id=?)",
@@ -440,18 +479,21 @@ class Store:
 
     # ------------------------------------------------------------ enrollments
     def create_enrollment_session(
-        self, *, name: str, token_hash: str, ttl_seconds: int, origin: str | None
+        self, *, name: str, token_hash: str, ttl_seconds: int, origin: str | None,
+        target_voice_id: str | None = None
     ) -> dict[str, Any]:
+        if target_voice_id:
+            self.get_voice_row(target_voice_id)
         now = now_ms()
         session_id = new_id("enr")
         with self.db.transaction(immediate=True) as conn:
             conn.execute(
                 """
                 INSERT INTO enrollment_sessions
-                    (id, name, token_hash, status, created_at, expires_at, origin, last_seen_at)
-                VALUES (?, ?, ?, 'open', ?, ?, ?, ?)
+                    (id, name, target_voice_id, token_hash, status, created_at, expires_at, origin, last_seen_at)
+                VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?)
                 """,
-                (session_id, name, token_hash, now, now + ttl_seconds * 1000, origin, now),
+                (session_id, name, target_voice_id, token_hash, now, now + ttl_seconds * 1000, origin, now),
             )
         return self.get_enrollment_session(session_id)
 
@@ -1111,6 +1153,7 @@ class Store:
                 "UPDATE jobs SET input_json='{\"redacted\":true}' "
                 "WHERE status IN ('succeeded','failed','canceled') "
                 "AND finished_at IS NOT NULL AND finished_at < ? "
+                "AND NOT EXISTS (SELECT 1 FROM artifacts a WHERE a.job_id=jobs.id AND a.expires_at IS NULL) "
                 "AND input_json != '{\"redacted\":true}'",
                 (cutoff_ms,),
             )
@@ -1256,6 +1299,7 @@ class Store:
         return {
             "id": voice["id"],
             "name": voice["name"],
+            "status": voice["status"],
             "backend": voice["backend"],
             "model_revision": voice["model_revision"],
             "authorized": bool(voice["authorized"]),
@@ -1278,6 +1322,15 @@ class Store:
                 "preparation": preparation,
                 "checks": checks,
             },
+            "warnings": [
+                {"code": code, "message": {
+                    "source_is_stereo_will_be_downmixed": "Stereo reference is mixed to mono; the original is retained.",
+                    "background_noise_not_removed": "Background noise is not removed automatically.",
+                    "speaker_identity_not_verified": "Speaker identity is not verified; permission is attested by the owner.",
+                    "possible_clipping": "Possible clipping: use a quieter recording if it sounds distorted.",
+                }.get(code, code.replace("_", " "))}
+                for code in checks.get("warnings", [])
+            ],
             "is_default": False,
         }
 

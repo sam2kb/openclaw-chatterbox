@@ -1,119 +1,116 @@
 # openclaw-chatterbox
 
-Save a voice from a microphone recording or audio file, then ask OpenClaw to
-turn your text into an audio file. Chatterbox Turbo generates speech locally;
-the service keeps recordings and generated files in private storage.
+Save a voice from a browser microphone recording or audio file, then ask
+OpenClaw to read your text. The service generates original 24 kHz mono WAV
+locally with Chatterbox Turbo and keeps recordings and audio private.
 
 ## Use it through OpenClaw
 
-After installation, you can say:
+- “Create a voice called My voice from this recording.” Attach a file you own
+  or have permission to use.
+- “I'd like to record a new voice.” OpenClaw gives you a private recorder link.
+- “Update My voice with a new recording.” The recorder updates that profile's
+  reference and keeps its ID and earlier versions.
+- “Use My voice to say: Thank you for calling. Please leave a message.”
+- “Keep take 2 as Production greeting.” OpenClaw retains that exact original.
+- “Send Production greeting again.” It retrieves the saved file without another
+  synthesis.
 
-- "Create a voice called My voice from this audio file." Attach a recording
-  you own or have permission to use.
-- "I'd like to record a new voice." OpenClaw gives you a private HTTPS link
-  where you can use the microphone or upload a file.
-- "Use My voice to make a WAV saying: Thank you for calling. Please leave a
-  message after the tone."
-- "Make an MP3 of this text using My voice."
+The webchat composer mic is Talk/dictation. Use the recorder link to capture
+an audio file. A new voice's name is editable before saving; the link's name is
+only a default. Links are single-use and normally expire after 30 minutes.
+Ask for a fresh link if one has expired or been used.
 
-OpenClaw saves the voice, waits for generation, and returns the audio file.
-You can reuse a saved voice without uploading the sample again. A clear
-10-15 second clip is recommended; the recorder lets you preview and select it.
+A clear 10-15 second clip is recommended. Stereo is mixed to mono, background
+noise is not removed automatically, and clipping can affect the result. The
+service records permission attestation and does not verify speaker identity.
+Enrollment uses the sample as a reference; it does not fine-tune model weights.
+See [recording guidance](docs/recording.md) and [training](docs/training.md).
 
-Requests to "train a voice" use the sample as a reference for synthesis. This
-is reference-conditioned cloning: enrollment stores the recording and does not
-fine-tune model weights. Voice identity is consent-attested, not automatically
-verified. See [recording guidance](docs/recording.md) and the
-[training boundary](docs/training.md).
+## Generate, check, and listen
 
-## Deployment status
+The service splits text at sentence boundaries while preserving the supplied
+characters. Explicit pause segments are available. Each new render is a
+stochastic take: a seed does not guarantee bytes, timing, duration, or wording.
+Sampling controls do not set an accent; accent comes from the reference.
 
-Version 0.1.1 fixes real GPU startup on a read-only filesystem, worker readiness,
-smoke-test reporting, HTTPS path-prefix routing, and upgrade recovery. The pinned
-Torch 2.6.0/CUDA 12.4 stack has loaded and generated speech on a GTX 1070 Ti.
-[Compatibility results](docs/compatibility.md) distinguish measured GPU behavior
-from the listening and speaker-similarity checks that still need an owner review.
+Local transcription compares the generated audio with the requested words.
+The result is bound to the audio checksum. It flags article changes, missing
+endings, and other differences without silently accepting them. Transcription
+can also be wrong, so agreement is not proof. Signal checks measure levels and
+possible clipping; they cannot judge naturalness or voice similarity.
 
-The OpenClaw integration is a skill and lightweight client. It provides the
-recording/file-to-voice and text-to-audio workflow; it does not replace Talk mode,
-OpenClaw's built-in TTS provider, or voice-call providers.
+A private player shows each original, its requested wording, transcript check,
+and listening decision. The owner can compare takes and choose one to retain.
+OpenClaw delivery uses standalone `MEDIA:` directives so described files become
+actual chat attachments. The helper produces the complete presentation block.
+A raw share URL is not used as a substitute for a player.
 
-## Install
+## Original files and retention
 
-Use [the installation guide](docs/install.md) to build the API and worker,
-provision the pinned model, and install the skill for the authorized host agent.
-The deployment plan is read-only:
+The normal workflow delivers only the original master. It does not synthesize
+another preset or produce telephony/downsampled variants. Historical artifact
+formats remain readable. An explicitly requested encoding should be derived
+from the approved original, never from another synthesis.
 
-```sh
-deploy/clawbox plan --json
-```
+Draft service artifacts expire after seven days; cleanup runs at startup and
+hourly. Doctor reports the schedule and last result. Managed host exports have
+a daily cleanup timer and deduplicate only byte-identical audio by SHA-256.
+Different takes of the same length remain different files.
 
-A private HTTPS route may use a prefix such as `/clawvoice/`. Set
-`CLAWVOICE_PUBLIC_BASE_URL` to that full service URL and
-`CLAWVOICE_ALLOWED_ORIGINS` to the HTTPS origin. The API port stays on loopback.
-The browser uses a short-lived, single-enrollment credential; the service
-credential remains in a protected file on the host.
+Retained originals and their managed exports have no automatic expiry.
+Generate a fresh player link after retaining a take: earlier draft links keep
+their original expiry. Retained links can be revoked. Saved assets are listed
+by name and ID, and reversible voice archival hides stale profiles without
+deleting their recordings or production audio.
 
-## Outputs and behavior
+## Install and operate
 
-- Master 24 kHz mono WAV, MP3, 8 kHz telephony WAV, and optional raw mu-law.
-- Structured text/pause segments. A `pause_ms: 2000` segment inserts exactly
-  2,000 ms of digital silence during assembly.
-- Durable SQLite queue with one inference worker, cancellation and interrupted
-  job recovery. Profile conditioning is serialized and restored between renders.
-- Explicit model provisioning and no automatic CPU fallback.
-- Private local artifacts. Sending to other people, Twilio changes, calls, and
-  publishing are outside this service.
-
-## Developer quick start
-
-The fake backend exercises the API and recorder without loading a model. It
-produces a tone and cannot establish voice quality or GPU support.
-
-```sh
-uv venv .venv --python 3.11
-uv sync --frozen --extra dev
-export CLAWVOICE_DATA_DIR="$PWD/var"
-export CLAWVOICE_BACKEND=fake
-export CLAWVOICE_ALLOW_FAKE=1
-export CLAWVOICE_DEVICE=cpu
-export CLAWVOICE_TOKEN_FILE="$PWD/var/secrets/service-token"
-.venv/bin/clawvoice serve
-```
-
-Open <http://127.0.0.1:8765/>. For real synthesis, provision the model explicitly:
-
-```sh
-clawvoice models fetch --backend turbo --revision 749d1c1a46eb10492095d68fbcf55691ccf137cd
-```
-
-The worker checks the pinned files before loading and does not fetch weights
-during an audio request.
-
-## Operator CLI
-
-The client installs without Torch. Ordinary use through OpenClaw does not
-require the owner to run these commands:
+Use [installation](docs/install.md), [OpenClaw integration](docs/openclaw-integration.md),
+and [the runbook](docs/runbook.md). The API stays on loopback; the recorder and
+private player can use an HTTPS prefix such as `/clawvoice/`. Scoped credentials
+stay in URL fragments and browser memory. The host service credential stays in
+a protected file.
 
 ```sh
 clawvoice doctor --json
-clawvoice enroll start --name my-voice --json
-clawvoice voices create --name my-voice --audio ./sample.wav --authorized
-clawvoice voices revise voc_... --audio ./new-sample.wav --authorized
-clawvoice voices list --json
-clawvoice speak --voice voc_... --text-file greeting.txt --preset master --json --wait
-clawvoice render --voice voc_... --segments-file greeting.json --preset telephony --json --wait
-clawvoice artifacts fetch art_... --output greeting.wav --json
+clawvoice enroll start --name "My voice" --json
+clawvoice enroll start --voice voc_... --json
+clawvoice speak --voice voc_... --text-file greeting.txt --wait --json
+clawvoice artifacts verify art_... --json
+clawvoice deliver art_... --player --json
+clawvoice artifacts keep art_... --name "Production greeting" --approved --json
+clawvoice assets list --json
+clawvoice voices archive voc_... --json
+clawvoice voices list --all --json
+clawvoice voices restore voc_... --json
+clawvoice library schedule --apply --json
 ```
 
-Credentials come from a mode-0600 file or runtime secret environment variable,
-never from command arguments. JSON results go to stdout and diagnostics to stderr.
+The base client has no Torch dependency. Doctor's service-worker assessment is
+authoritative; local probes describe only the machine running the client.
 
-See [architecture](docs/architecture.md), [security](docs/security.md),
-[API](docs/api.md), [operations](docs/runbook.md), and
-[OpenClaw integration](docs/openclaw-integration.md).
+Version 0.2.0 adds a schema migration. Take a verified private data snapshot
+before upgrade. Automatic rollback across incompatible schemas is refused;
+matching data must be restored deliberately. See the runbook. The pinned
+Torch 2.6.0/CUDA 12.4 stack has generated speech on a GTX 1070 Ti; measured
+hardware results and remaining owner listening checks are in
+[compatibility](docs/compatibility.md).
 
-## License
+## Development
 
-Project code is Apache-2.0. Chatterbox, the pinned Turbo checkpoint and Perth
-are MIT; their notices are in `THIRD_PARTY_NOTICES.md`.
+Python 3.11 is supported. The fake backend exercises behavior with a tone and
+cannot prove voice quality or GPU support:
+
+```sh
+uv sync --frozen --extra dev
+CLAWVOICE_BACKEND=fake CLAWVOICE_ALLOW_FAKE=1 CLAWVOICE_DEVICE=cpu .venv/bin/clawvoice serve
+```
+
+Provision the pinned Turbo model explicitly for real inference; requests do
+not download weights or silently fall back to CPU. See
+[architecture](docs/architecture.md), [security](docs/security.md),
+[API](docs/api.md), and [evaluation](docs/evaluation.md).
+
+Project code is Apache-2.0. Chatterbox, the pinned Turbo checkpoint, and Perth
+are MIT; see `THIRD_PARTY_NOTICES.md`.

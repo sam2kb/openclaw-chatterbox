@@ -97,7 +97,7 @@ def test_v1_database_migration_adds_job_reference_column(tmp_path):
         columns = {row[1] for row in check.execute("PRAGMA table_info(jobs)")}
         version = check.execute("PRAGMA user_version").fetchone()[0]
     assert "reference_version_id" in columns
-    assert version == 2
+    assert version == 3
 
 
 def test_public_url_allows_a_safe_reverse_proxy_prefix(tmp_path):
